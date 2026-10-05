@@ -337,7 +337,7 @@ impl Rope {
 
     /// Converts a "disconnected slice" into a proper rope, in preparation for
     /// edits.
-    fn trim_disconnected_slice(&mut self) {
+    pub(crate) fn trim_disconnected_slice(&mut self) {
         let trim_range_start = [0, self.byte_range[0]];
         let trim_range_end = [self.byte_range[1], self.root_info.bytes];
 

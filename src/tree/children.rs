@@ -879,8 +879,9 @@ mod inner {
                 *dst_info = *src_info;
             }
 
-            // Set length.
+            // Set length and copy the unbalance flags.
             clone_array.len = self.len;
+            clone_array.subtree_unbalance_flags = self.subtree_unbalance_flags;
 
             // Some sanity checks for debug builds.
             #[cfg(debug_assertions)]

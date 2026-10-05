@@ -2,6 +2,7 @@ mod children;
 #[cfg(feature = "text_summary")]
 mod line_summary;
 mod node;
+mod node_join;
 mod text;
 mod text_info;
 

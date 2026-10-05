@@ -176,8 +176,11 @@ mod shared_impl;
 mod chunk_cursor;
 mod rope;
 mod rope_builder;
+mod rope_join;
 mod slice;
 mod str_utils;
+#[cfg(feature = "text_summary")]
+mod text_summary;
 mod tree;
 
 pub mod extra;
@@ -187,6 +190,8 @@ pub use chunk_cursor::ChunkCursor;
 pub use rope::Rope;
 pub use rope_builder::RopeBuilder;
 pub use slice::RopeSlice;
+#[cfg(feature = "text_summary")]
+pub use text_summary::TextSummary;
 
 /// Specifies a set of line breaks to be recognized in Ropey's line-based APIs.
 ///
