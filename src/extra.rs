@@ -15,7 +15,11 @@ pub mod esoterica {
 
     use std::sync::Arc;
 
-    use crate::{slice::SliceInner, tree::Node, Rope, RopeSlice};
+    use crate::{
+        slice::{root_node_info, SliceInner},
+        tree::Node,
+        Rope, RopeSlice,
+    };
 
     /// Returns true if both ropes are cloned instances of each other that share
     /// the same content.
@@ -86,10 +90,13 @@ pub mod esoterica {
     pub fn disconnect_slice(slice: RopeSlice) -> Option<Rope> {
         match slice {
             RopeSlice(SliceInner::Rope {
-                root, byte_range, ..
+                root,
+                root_info,
+                root_lines,
+                byte_range,
             }) => Some(Rope {
                 root: root.clone(),
-                root_info: root.text_info(),
+                root_info: root_node_info(root, root_info, root_lines),
                 byte_range: byte_range,
             }),
 

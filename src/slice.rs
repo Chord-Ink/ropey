@@ -4,7 +4,7 @@ use crate::{
     end_bound_to_num,
     iter::{Bytes, CharIndices, Chars, Chunks},
     start_bound_to_num,
-    tree::{Node, TextInfo},
+    tree::{Children, Node, NodeInfo, TextInfo},
     ChunkCursor,
     Error::*,
     Result, Rope,
@@ -45,18 +45,75 @@ pub(crate) enum SliceInner<'a> {
     Rope {
         root: &'a Node,
         root_info: &'a TextInfo,
+        root_lines: RootLines<'a>,
         byte_range: [usize; 2],
     },
     Str(&'a str),
 }
 
+/// The line summary of a slice's root node, when it is known.
+#[cfg(feature = "text_summary")]
+pub(crate) type RootLines<'a> = Option<&'a crate::tree::LineSummary>;
+#[cfg(not(feature = "text_summary"))]
+pub(crate) type RootLines<'a> = ();
+
+/// No known line summary.
+#[inline(always)]
+pub(crate) fn no_root_lines<'a>() -> RootLines<'a> {
+    #[cfg(feature = "text_summary")]
+    return None;
+}
+
+/// The line summary of child `i`.
+#[inline(always)]
+fn child_lines(children: &Children, i: usize) -> RootLines<'_> {
+    #[cfg(feature = "text_summary")]
+    return Some(&children.lines()[i]);
+
+    #[cfg(not(feature = "text_summary"))]
+    {
+        let _ = (children, i);
+    }
+}
+
+/// The full info of a slice's root node.  It is O(1) when the root's line
+/// summary is known.  Otherwise the root's info is folded from its children,
+/// or a leaf root is scanned.
+pub(crate) fn root_node_info(root: &Node, root_info: &TextInfo, root_lines: RootLines) -> NodeInfo {
+    #[cfg(feature = "text_summary")]
+    return match root_lines {
+        Some(&line_summary) => NodeInfo {
+            counts: *root_info,
+            line_summary,
+        },
+        None => root.text_info(),
+    };
+
+    #[cfg(not(feature = "text_summary"))]
+    {
+        let _ = (root, root_lines);
+        NodeInfo { counts: *root_info }
+    }
+}
+
 impl<'a> RopeSlice<'a> {
     pub(crate) fn new(root: &'a Node, root_info: &'a TextInfo, byte_range: [usize; 2]) -> Self {
+        RopeSlice::with_lines(root, root_info, no_root_lines(), byte_range)
+    }
+
+    /// `new()` for a root whose line summary may be known.
+    pub(crate) fn with_lines(
+        root: &'a Node,
+        root_info: &'a TextInfo,
+        root_lines: RootLines<'a>,
+        byte_range: [usize; 2],
+    ) -> Self {
         // Special case for performance, since this actually comes up a fair bit.
         if byte_range[0] == 0 && byte_range[1] == root_info.bytes {
             return RopeSlice(SliceInner::Rope {
                 root: root,
                 root_info: root_info,
+                root_lines: root_lines,
                 byte_range: byte_range,
             });
         }
@@ -66,6 +123,7 @@ impl<'a> RopeSlice<'a> {
         let mut end = byte_range[1];
         let mut node = root;
         let mut node_info = root_info;
+        let mut node_lines = root_lines;
         'outer: loop {
             match *node {
                 Node::Leaf(_) => {
@@ -81,6 +139,7 @@ impl<'a> RopeSlice<'a> {
                             end -= child_start_byte;
                             node = &children.nodes()[i];
                             node_info = &children.info()[i];
+                            node_lines = child_lines(children, i);
                             continue 'outer;
                         }
                         child_start_byte = child_end_byte;
@@ -93,6 +152,7 @@ impl<'a> RopeSlice<'a> {
         RopeSlice(SliceInner::Rope {
             root: node,
             root_info: node_info,
+            root_lines: node_lines,
             byte_range: [start, end],
         })
     }
@@ -197,10 +257,14 @@ impl<'a> RopeSlice<'a> {
 
             match slice {
                 RopeSlice(SliceInner::Rope {
-                    root, root_info, ..
-                }) => Ok(RopeSlice::new(
                     root,
                     root_info,
+                    root_lines,
+                    ..
+                }) => Ok(RopeSlice::with_lines(
+                    root,
+                    root_info,
+                    *root_lines,
                     [start_idx_real, end_idx_real],
                 )),
                 RopeSlice(SliceInner::Str(text)) => {
@@ -234,7 +298,12 @@ impl std::cmp::PartialEq<Rope> for RopeSlice<'_> {
 impl<'a> From<&'a Rope> for RopeSlice<'a> {
     #[inline(always)]
     fn from(r: &Rope) -> RopeSlice<'_> {
-        RopeSlice::new(&r.root, &r.root_info.counts, [0, r.root_info.counts.bytes])
+        RopeSlice::with_lines(
+            &r.root,
+            &r.root_info.counts,
+            r.root_lines(),
+            [0, r.root_info.counts.bytes],
+        )
     }
 }
 

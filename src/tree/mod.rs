@@ -8,6 +8,9 @@ mod text_info;
 
 pub(crate) use text_info::{NodeInfo, TextInfo};
 
+#[cfg(feature = "text_summary")]
+pub(crate) use line_summary::LineSummary;
+
 #[cfg(not(any(test, feature = "__dev__small_chunks")))]
 mod constants {
     pub(crate) const MAX_CHILDREN: usize = 16;

@@ -7,7 +7,7 @@ use crate::{
     extra::esoterica,
     iter::{Bytes, CharIndices, Chars, Chunks},
     rope_builder::RopeBuilder,
-    slice::{RopeSlice, SliceInner},
+    slice::{RootLines, RopeSlice, SliceInner},
     start_bound_to_num, str_utils,
     tree::{Children, Node, NodeInfo, Text, TextInfo, MAX_TEXT_SIZE},
     ChunkCursor,
@@ -513,6 +513,13 @@ impl Rope {
         &self.root_info.counts
     }
 
+    /// The root's line summary, for slices of this rope.
+    #[inline(always)]
+    pub(crate) fn root_lines(&self) -> RootLines<'_> {
+        #[cfg(feature = "text_summary")]
+        return Some(&self.root_info.line_summary);
+    }
+
     #[inline(always)]
     fn get_byte_range(&self) -> [usize; 2] {
         self.byte_range
@@ -705,9 +712,10 @@ impl Rope {
             let start_idx_real = rope.get_byte_range()[0] + start_idx;
             let end_idx_real = rope.get_byte_range()[0] + end_idx;
 
-            Ok(RopeSlice::new(
+            Ok(RopeSlice::with_lines(
                 rope.get_root(),
                 rope.get_root_info(),
+                rope.root_lines(),
                 [start_idx_real, end_idx_real],
             ))
         }
@@ -820,6 +828,18 @@ impl From<RopeSlice<'_>> for Rope {
     fn from(rs: RopeSlice) -> Rope {
         match rs.0 {
             SliceInner::Str(s) => Rope::from_str(s),
+            SliceInner::Rope {
+                root: Node::Leaf(text),
+                byte_range,
+                ..
+            } => {
+                let text = &text.text()[byte_range[0]..byte_range[1]];
+                Rope {
+                    root: Node::Leaf(Arc::new(Text::from_str(text))),
+                    root_info: NodeInfo::from_str(text),
+                    byte_range: [0, text.len()],
+                }
+            }
             SliceInner::Rope { .. } => {
                 let mut r = esoterica::disconnect_slice(rs).unwrap();
                 r.trim_disconnected_slice();

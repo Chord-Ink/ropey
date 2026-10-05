@@ -164,6 +164,17 @@ impl RopeSlice<'_> {
 
         let info = match self.0 {
             SliceInner::Rope {
+                root_info,
+                root_lines: Some(&line_summary),
+                byte_range,
+                ..
+            } if byte_range == [0, root_info.bytes] && [start, end] == byte_range => {
+                Some(NodeInfo {
+                    counts: *root_info,
+                    line_summary,
+                })
+            }
+            SliceInner::Rope {
                 root, byte_range, ..
             } => info_in_range(root, byte_range[0] + start, byte_range[0] + end),
             SliceInner::Str(text) => text.get(start..end).map(NodeInfo::from_str),
@@ -260,6 +271,27 @@ mod tests {
         assert_eq!(s.text_summary(c..d), naive(&t[c..d]));
         let s: RopeSlice = t.into();
         assert_eq!(s.text_summary(c..d), naive(&t[c..d]));
+    }
+
+    #[test]
+    fn whole_slices_and_ropes_from_slices() {
+        let r = Rope::from_str(TEXT);
+        let bounds: Vec<usize> = (0..=TEXT.len())
+            .filter(|&i| TEXT.is_char_boundary(i))
+            .collect();
+        for &a in &bounds {
+            for &b in bounds.iter().filter(|&&b| b >= a) {
+                let s = r.slice(a..b);
+                let t = &TEXT[a..b];
+                assert_eq!(s.text_summary(..), naive(t), "{a}..{b}");
+                assert_eq!(s.slice(..).text_summary(..), naive(t), "{a}..{b}");
+
+                let owned = Rope::from(s);
+                owned.assert_invariants();
+                assert_eq!(owned, t);
+                assert_eq!(owned.text_summary(..), naive(t), "{a}..{b}");
+            }
+        }
     }
 
     #[test]
