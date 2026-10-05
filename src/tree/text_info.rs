@@ -134,6 +134,38 @@ impl TextInfo {
     }
 }
 
+impl TextInfo {
+    /// Adds only the counts (bytes, chars, utf16 and line breaks).  The line
+    /// summary of `self` is kept as is.
+    ///
+    /// For position searches, which only need the counts of the text to the
+    /// left and run once per child on every lookup.
+    #[inline(always)]
+    pub(crate) fn add_counts(self, rhs: TextInfo) -> TextInfo {
+        TextInfo {
+            #[cfg(feature = "text_summary")]
+            line_summary: self.line_summary,
+
+            bytes: self.bytes + rhs.bytes,
+
+            #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
+            chars: self.chars + rhs.chars,
+
+            #[cfg(feature = "metric_utf16")]
+            utf16: self.utf16 + rhs.utf16,
+
+            #[cfg(feature = "metric_lines_lf")]
+            line_breaks_lf: self.line_breaks_lf + rhs.line_breaks_lf,
+
+            #[cfg(feature = "metric_lines_lf_cr")]
+            line_breaks_cr_lf: self.line_breaks_cr_lf + rhs.line_breaks_cr_lf,
+
+            #[cfg(feature = "metric_lines_unicode")]
+            line_breaks_unicode: self.line_breaks_unicode + rhs.line_breaks_unicode,
+        }
+    }
+}
+
 impl Add for TextInfo {
     type Output = Self;
     // Note: this does *not* handle anything related to CRLF line breaks.  It

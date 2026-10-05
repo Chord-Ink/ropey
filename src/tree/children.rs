@@ -312,7 +312,8 @@ impl Children {
     /// Returns the child index and left-side-accumulated text info of the
     /// first child that matches the given predicate.
     ///
-    /// If no child matches the predicate, the last child is returned.
+    /// If no child matches the predicate, the last child is returned.  Only
+    /// the counts are accumulated: the line summary of the result is empty.
     #[cfg(any(
         feature = "metric_chars",
         feature = "metric_utf16",
@@ -331,7 +332,7 @@ impl Children {
         let mut accum = TextInfo::new();
         let mut idx = 0;
         while idx < (self.len() - 1) {
-            let next_accum = accum + self.info()[idx];
+            let next_accum = accum.add_counts(self.info()[idx]);
             if pred(next_accum) {
                 break;
             }

@@ -333,7 +333,7 @@ impl Node {
     ///
     /// Returns the `Text` that contains the given index of the specified
     /// metric, and the left-side info of where it starts in the larger text of
-    /// the node tree.
+    /// the node tree.  The left-side info holds counts only, no line summary.
     ///
     /// - `metric_scanner`: a function that scans `Children` to find the
     ///   child that contains `metric_idx`, returning the child's index and
@@ -370,7 +370,7 @@ impl Node {
                 }
                 Node::Internal(ref children) => {
                     let (child_i, acc_info) = metric_scanner(children, metric_idx);
-                    left_info += acc_info;
+                    left_info = left_info.add_counts(acc_info);
                     node = &children.nodes()[child_i];
                     metric_idx = metric_subtractor(metric_idx, &acc_info);
                 }
