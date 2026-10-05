@@ -165,12 +165,13 @@ impl Node {
                 children.info_mut()[child_i] = l_info;
                 children.update_unbalance_flag(child_i);
 
-                // Handle the residual node if there is one and return.
+                // Handle the residual node if there is one and return.  The
+                // node's info is folded from its children: the line summary
+                // holds maxima, which cannot be updated by subtraction.
                 if let Some((r_info, r_node)) = residual {
                     if children.len() < MAX_CHILDREN {
-                        let new_node_info = node_info - info + l_info + r_info;
                         children.insert(child_i + 1, (r_info, r_node));
-                        Ok((new_node_info, None))
+                        Ok((children.combined_text_info(), None))
                     } else {
                         let r = children.insert_split(child_i + 1, (r_info, r_node));
                         let r_info = r.combined_text_info();
@@ -180,8 +181,7 @@ impl Node {
                         ))
                     }
                 } else {
-                    let new_node_info = node_info - info + l_info;
-                    Ok((new_node_info, None))
+                    Ok((children.combined_text_info(), None))
                 }
             }
         }
@@ -244,18 +244,15 @@ impl Node {
                 if start_child_i == end_child_i {
                     if start_byte_idx == 0 && end_byte_idx == start_info.bytes {
                         // The removal happens to be exactly the whole child.
-                        let new_node_info = node_info - children.info()[start_child_i];
                         children.remove(start_child_i);
-                        Ok((new_node_info, true))
+                        Ok((children.combined_text_info(), true))
                     } else {
                         let (new_child_info, created_boundary) = children.nodes_mut()
                             [start_child_i]
                             .remove_byte_range([start_byte_idx, end_byte_idx], start_info)?;
-                        let new_node_info =
-                            node_info - children.info()[start_child_i] + new_child_info;
                         children.info_mut()[start_child_i] = new_child_info;
                         children.update_unbalance_flag(start_child_i);
-                        Ok((new_node_info, created_boundary))
+                        Ok((children.combined_text_info(), created_boundary))
                     }
                 }
                 // More complex case: the removal spans multiple children.

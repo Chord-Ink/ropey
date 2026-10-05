@@ -1,4 +1,4 @@
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign};
 
 #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
 use str_indices::chars;
@@ -6,7 +6,7 @@ use str_indices::chars;
 #[cfg(feature = "metric_utf16")]
 use str_indices::utf16;
 
-#[cfg(feature = "metric_lines_lf")]
+#[cfg(all(feature = "metric_lines_lf", not(feature = "text_summary")))]
 use str_indices::lines_lf;
 
 #[cfg(feature = "metric_lines_lf_cr")]
@@ -22,10 +22,8 @@ use str_indices::lines;
 ))]
 use crate::LineType;
 
-use crate::str_utils::{ends_with_cr, starts_with_lf};
-
-#[cfg(any(feature = "metric_lines_lf_cr", feature = "metric_lines_unicode"))]
-use crate::str_utils::{byte_is_cr, byte_is_lf};
+#[cfg(feature = "text_summary")]
+pub(crate) use super::line_summary::LineSummary;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub(crate) struct TextInfo {
@@ -45,6 +43,9 @@ pub(crate) struct TextInfo {
 
     #[cfg(feature = "metric_lines_unicode")]
     pub line_breaks_unicode: usize,
+
+    #[cfg(feature = "text_summary")]
+    pub line_summary: LineSummary,
 }
 
 impl TextInfo {
@@ -71,12 +72,21 @@ impl TextInfo {
 
             #[cfg(feature = "metric_lines_unicode")]
             line_breaks_unicode: 0,
+
+            #[cfg(feature = "text_summary")]
+            line_summary: LineSummary::new(),
         }
     }
 
     pub(crate) fn from_str(text: &str) -> TextInfo {
         #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
         let char_count = chars::count(text);
+
+        #[cfg(feature = "metric_utf16")]
+        let utf16_count = utf16::count_surrogates(text) + char_count;
+
+        #[cfg(feature = "text_summary")]
+        let (line_summary, lf_count) = LineSummary::from_str(text, char_count, utf16_count);
 
         TextInfo {
             bytes: text.len(),
@@ -85,16 +95,22 @@ impl TextInfo {
             chars: char_count,
 
             #[cfg(feature = "metric_utf16")]
-            utf16: utf16::count_surrogates(text) + char_count,
+            utf16: utf16_count,
 
-            #[cfg(feature = "metric_lines_lf")]
+            #[cfg(all(feature = "metric_lines_lf", not(feature = "text_summary")))]
             line_breaks_lf: lines_lf::count_breaks(text),
+
+            #[cfg(feature = "text_summary")]
+            line_breaks_lf: lf_count,
 
             #[cfg(feature = "metric_lines_lf_cr")]
             line_breaks_cr_lf: lines_crlf::count_breaks(text),
 
             #[cfg(feature = "metric_lines_unicode")]
             line_breaks_unicode: lines::count_breaks(text),
+
+            #[cfg(feature = "text_summary")]
+            line_summary,
         }
     }
 
@@ -116,125 +132,6 @@ impl TextInfo {
             LineType::Unicode => self.line_breaks_unicode,
         }
     }
-
-    /// Updates info for a leaf node that has text inserted into it.  This
-    /// should be called with the pre-insertion `text`.
-    #[must_use]
-    pub(crate) fn str_insert(
-        self,
-        text: &str,
-        byte_idx: usize,
-        insertion_info: TextInfo,
-        ins_text: &str,
-    ) -> TextInfo {
-        // To silence unused parameter warnings when the relevant features are
-        // disabled.
-        let _ = (text, byte_idx, insertion_info, ins_text);
-
-        // This function only works correctly when the inserted text is non-zero
-        // length.
-        debug_assert!(insertion_info.bytes > 0);
-
-        // Silence unused mut warnings when the relevant features are disabled.
-        #[allow(unused_mut)]
-        let mut new_info = self + insertion_info;
-
-        #[cfg(any(feature = "metric_lines_lf_cr", feature = "metric_lines_unicode"))]
-        {
-            let seam_cr = byte_idx > 0 && byte_is_cr(text, byte_idx - 1);
-            let seam_lf = byte_is_lf(text, byte_idx);
-
-            let crlf_split_compensation = (seam_cr && seam_lf) as usize;
-            let crlf_merge_compensation_1 = (seam_cr && starts_with_lf(ins_text)) as usize;
-            let crlf_merge_compensation_2 = (ends_with_cr(ins_text) && seam_lf) as usize;
-
-            #[cfg(feature = "metric_lines_lf_cr")]
-            {
-                new_info.line_breaks_cr_lf += crlf_split_compensation;
-                new_info.line_breaks_cr_lf -= crlf_merge_compensation_1;
-                new_info.line_breaks_cr_lf -= crlf_merge_compensation_2;
-            }
-            #[cfg(feature = "metric_lines_unicode")]
-            {
-                new_info.line_breaks_unicode += crlf_split_compensation;
-                new_info.line_breaks_unicode -= crlf_merge_compensation_1;
-                new_info.line_breaks_unicode -= crlf_merge_compensation_2;
-            }
-        }
-
-        new_info
-    }
-
-    /// Updates info for a leaf node that has text removed from it.  This
-    /// should be called with the pre-removal `text`.
-    #[must_use]
-    pub(crate) fn str_remove(self, text: &str, byte_idx_range: [usize; 2]) -> TextInfo {
-        // For terseness.
-        let [start, end] = byte_idx_range;
-
-        if start == end {
-            return self;
-        }
-        if start == 0 && end == text.len() {
-            return TextInfo::new();
-        }
-
-        // Easier case: the removal range is larger than the text that will
-        // remain, so we just scan the text that will be left over.
-        if (end - start) >= (text.len() / 2) {
-            let left = &text[..start];
-            let right = &text[end..];
-
-            let left_info = TextInfo::from_str(&text[..start]);
-            let right_info = TextInfo::from_str(&text[end..]);
-
-            #[allow(unused_mut)] // `mut` only needed with some features.
-            let mut new_info = left_info + right_info;
-
-            if ends_with_cr(left) && starts_with_lf(right) {
-                #[cfg(feature = "metric_lines_lf_cr")]
-                {
-                    new_info.line_breaks_cr_lf -= 1
-                }
-                #[cfg(feature = "metric_lines_unicode")]
-                {
-                    new_info.line_breaks_unicode -= 1;
-                }
-            }
-
-            return new_info;
-        }
-
-        #[allow(unused_mut)] // `mut` only needed with some features.
-        let mut new_info = self - TextInfo::from_str(&text[byte_idx_range[0]..byte_idx_range[1]]);
-
-        #[cfg(any(feature = "metric_lines_lf_cr", feature = "metric_lines_unicode"))]
-        {
-            let start_lf = byte_is_lf(text, start);
-            let start_cr = start > 0 && byte_is_cr(text, start - 1);
-            let end_lf = end < text.len() && byte_is_lf(text, end);
-            let end_cr = byte_is_cr(text, end - 1);
-
-            let crlf_split_compensation_1 = (start_cr && start_lf) as usize;
-            let crlf_split_compensation_2 = (end_cr && end_lf) as usize;
-            let crlf_merge_compensation = (start_cr && end_lf) as usize;
-
-            #[cfg(feature = "metric_lines_lf_cr")]
-            {
-                new_info.line_breaks_cr_lf += crlf_split_compensation_1;
-                new_info.line_breaks_cr_lf += crlf_split_compensation_2;
-                new_info.line_breaks_cr_lf -= crlf_merge_compensation;
-            }
-            #[cfg(feature = "metric_lines_unicode")]
-            {
-                new_info.line_breaks_unicode += crlf_split_compensation_1;
-                new_info.line_breaks_unicode += crlf_split_compensation_2;
-                new_info.line_breaks_unicode -= crlf_merge_compensation;
-            }
-        }
-
-        new_info
-    }
 }
 
 impl Add for TextInfo {
@@ -245,11 +142,18 @@ impl Add for TextInfo {
     // Because of that, using this correctly typically requires special
     // handling.  Beware.
     //
-    // If you want to combine two TextInfo's as if their text were
-    // concatenated, see `concat()`.
+    // The line summary is combined as if the texts were concatenated, so
+    // `a + b` is the info of `a`'s text followed by `b`'s text.
     #[inline(always)]
     fn add(self, rhs: TextInfo) -> TextInfo {
         TextInfo {
+            #[cfg(feature = "text_summary")]
+            line_summary: self.line_summary.concat(
+                self.line_breaks_lf,
+                rhs.line_summary,
+                rhs.line_breaks_lf,
+            ),
+
             bytes: self.bytes + rhs.bytes,
 
             #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
@@ -274,43 +178,6 @@ impl AddAssign for TextInfo {
     #[inline(always)]
     fn add_assign(&mut self, other: TextInfo) {
         *self = *self + other;
-    }
-}
-
-impl Sub for TextInfo {
-    type Output = Self;
-    // IMPORTANT: this does *not* handle anything related to CRLF line breaks.
-    // It just does a simple subtraction of the metrics.
-    //
-    // Because of that, using this correctly typically requires special
-    // handling.  Beware.
-    #[inline(always)]
-    fn sub(self, rhs: TextInfo) -> TextInfo {
-        TextInfo {
-            bytes: self.bytes - rhs.bytes,
-
-            #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
-            chars: self.chars - rhs.chars,
-
-            #[cfg(feature = "metric_utf16")]
-            utf16: self.utf16 - rhs.utf16,
-
-            #[cfg(feature = "metric_lines_lf")]
-            line_breaks_lf: self.line_breaks_lf - rhs.line_breaks_lf,
-
-            #[cfg(feature = "metric_lines_lf_cr")]
-            line_breaks_cr_lf: self.line_breaks_cr_lf - rhs.line_breaks_cr_lf,
-
-            #[cfg(feature = "metric_lines_unicode")]
-            line_breaks_unicode: self.line_breaks_unicode - rhs.line_breaks_unicode,
-        }
-    }
-}
-
-impl SubAssign for TextInfo {
-    #[inline(always)]
-    fn sub_assign(&mut self, other: TextInfo) {
-        *self = *self - other;
     }
 }
 

@@ -117,8 +117,8 @@ impl Text {
     //---------------------------------------------------------
     // Modify.
 
-    /// Inserts the given text at the given byte index, and computes an
-    /// updated TextInfo for the text at the same time.
+    /// Inserts the given text at the given byte index, and returns the
+    /// updated TextInfo, rescanned from the new text.
     ///
     /// Panics if there isn't enough free space or if the byte index
     /// isn't on a valid char boundary.
@@ -133,13 +133,9 @@ impl Text {
             return current_info;
         }
 
-        // Update text info based on the upcoming insertion.
-        let new_info =
-            current_info.str_insert(self.text(), byte_idx, TextInfo::from_str(text), text);
-
         self.0.insert(byte_idx, text);
 
-        new_info
+        self.text_info()
     }
 
     /// Inserts `text` and splits the resulting text into two roughly equal
@@ -157,8 +153,8 @@ impl Text {
         right_text
     }
 
-    /// Removes the text in the given right-exclusive byte range, and computes
-    /// an updated TextInfo for the resulting text at the same time..
+    /// Removes the text in the given right-exclusive byte range, and returns
+    /// the updated TextInfo, rescanned from the remaining text.
     ///
     /// Panics if the range isn't valid or doesn't lie on valid char
     /// boundaries.
@@ -168,12 +164,13 @@ impl Text {
         byte_idx_range: [usize; 2],
         current_info: TextInfo,
     ) -> TextInfo {
-        // Update text info based on the upcoming removal.
-        let new_info = current_info.str_remove(self.text(), byte_idx_range);
+        if byte_idx_range[0] == byte_idx_range[1] {
+            return current_info;
+        }
 
         self.0.remove(byte_idx_range);
 
-        new_info
+        self.text_info()
     }
 
     /// Appends `text` to the end.

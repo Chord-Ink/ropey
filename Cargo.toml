@@ -21,6 +21,7 @@ features = [
   "metric_lines_lf",
   "metric_lines_lf_cr",
   "metric_lines_unicode",
+  "text_summary",
 ]
 rustdoc-args = ["--cfg", "docsrs"]
 
@@ -33,6 +34,10 @@ metric_lines_lf_cr = []
 metric_lines_unicode = []
 simd = ["str_indices/simd"]
 
+# Keeps a per-node line summary (longest row, first and last line lengths)
+# so `text_summary()` answers for any byte range in O(log N).
+text_summary = ["metric_chars", "metric_utf16", "metric_lines_lf"]
+
 # DO NOT USE THIS FEATURE.  It is for internal debugging and testing purposes
 # only, and makes Ropey much slower and more memory hungry.  It is also not
 # part of the stable public API, and may be removed or changed in non-breaking
@@ -41,6 +46,7 @@ __dev__small_chunks = []
 
 [dependencies]
 str_indices = { version = "0.4", default-features = false }
+memchr = { version = "2.8", optional = true }
 
 [dev-dependencies]
 fastrand = "2.3.0"

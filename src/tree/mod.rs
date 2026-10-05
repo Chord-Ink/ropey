@@ -1,4 +1,6 @@
 mod children;
+#[cfg(feature = "text_summary")]
+mod line_summary;
 mod node;
 mod text;
 mod text_info;
