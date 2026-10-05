@@ -6,6 +6,9 @@ use super::{
     MAX_CHILDREN, MAX_TEXT_SIZE,
 };
 
+#[cfg(feature = "text_summary")]
+use super::text_info::LineSummary;
+
 #[cfg(any(
     feature = "metric_lines_lf",
     feature = "metric_lines_lf_cr",
@@ -46,6 +49,13 @@ impl Children {
     #[inline(always)]
     pub fn info(&self) -> &[TextInfo] {
         self.0.info()
+    }
+
+    /// Access to the line summary array.
+    #[cfg(feature = "text_summary")]
+    #[inline(always)]
+    pub fn lines(&self) -> &[LineSummary] {
+        self.0.lines()
     }
 
     /// The full info of the child at `idx`: its counts, and with
@@ -307,7 +317,13 @@ impl Children {
 
     #[inline(always)]
     pub fn combined_text_info(&self) -> NodeInfo {
-        (0..self.len()).fold(NodeInfo::new(), |acc, i| acc + self.node_info(i))
+        let counts = self.info().iter().fold(TextInfo::new(), |acc, &c| acc + c);
+        NodeInfo {
+            #[cfg(feature = "text_summary")]
+            line_summary: LineSummary::join(self.info(), self.lines(), counts.bytes),
+
+            counts,
+        }
     }
 
     /// Returns the child index and left-side-accumulated text info of the

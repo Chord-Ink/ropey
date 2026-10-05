@@ -14,6 +14,7 @@
 
 use str_indices::{chars, lines_lf, utf16};
 
+use super::TextInfo;
 use crate::str_utils;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
@@ -216,7 +217,34 @@ impl LineSummary {
         if bytes > u32::MAX as usize {
             return self.concat_checked(rows, rhs, rhs_rows);
         }
+        self.concat_u32(rows, rhs, rhs_rows)
+    }
 
+    /// The summary of texts joined in order.  `counts` holds their LF
+    /// counts, and `bytes` is the byte count of the joined text.  Like
+    /// `concat()`, it checks for overflow once, from `bytes`.
+    #[inline(always)]
+    pub(crate) fn join(counts: &[TextInfo], lines: &[LineSummary], bytes: usize) -> LineSummary {
+        let mut acc = LineSummary::new();
+        let mut rows = 0;
+        if bytes > u32::MAX as usize {
+            for (c, &l) in counts.iter().zip(lines) {
+                acc = acc.concat_checked(rows, l, c.line_breaks_lf);
+                rows += c.line_breaks_lf;
+            }
+        } else {
+            for (c, &l) in counts.iter().zip(lines) {
+                acc = acc.concat_u32(rows, l, c.line_breaks_lf);
+                rows += c.line_breaks_lf;
+            }
+        }
+        acc
+    }
+
+    /// `concat()` with plain u32 math, for joined texts of at most
+    /// u32::MAX bytes.
+    #[inline(always)]
+    fn concat_u32(self, rows: usize, rhs: LineSummary, rhs_rows: usize) -> LineSummary {
         let mut longest_row = self.longest_row;
         let mut longest_row_chars = self.longest_row_chars;
 
