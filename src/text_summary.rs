@@ -59,19 +59,19 @@ impl From<TextInfo> for TextSummary {
 }
 
 /// Text info of bytes `start..end` of `node`, whose own info is `node_info`.
+/// `start < end` must hold.
 ///
 /// Whole children are taken from their stored info, so only the leaves at
-/// the two ends of the range are scanned.
-fn info_in_range(node: &Node, node_info: &TextInfo, start: usize, end: usize) -> TextInfo {
+/// the two ends of the range are scanned.  Leaves always start and end on
+/// char boundaries, so the range ends are checked there, in those two
+/// leaves.  Returns `None` if one of them is not a char boundary.
+fn info_in_range(node: &Node, node_info: &TextInfo, start: usize, end: usize) -> Option<TextInfo> {
     if start == 0 && end == node_info.bytes {
-        return *node_info;
-    }
-    if start == end {
-        return TextInfo::new();
+        return Some(*node_info);
     }
 
     match node {
-        Node::Leaf(text) => TextInfo::from_str(&text.text()[start..end]),
+        Node::Leaf(text) => text.text().get(start..end).map(TextInfo::from_str),
         Node::Internal(children) => {
             let mut acc = TextInfo::new();
             let mut child_start = 0;
@@ -80,14 +80,14 @@ fn info_in_range(node: &Node, node_info: &TextInfo, start: usize, end: usize) ->
                 if child_end > start {
                     let s = start.max(child_start) - child_start;
                     let e = end.min(child_end) - child_start;
-                    acc += info_in_range(child, info, s, e);
+                    acc += info_in_range(child, info, s, e)?;
                 }
                 if child_end >= end {
                     break;
                 }
                 child_start = child_end;
             }
-            acc
+            Some(acc)
         }
     }
 }
@@ -121,10 +121,14 @@ impl Rope {
     pub fn try_text_summary<R: RangeBounds<usize>>(&self, byte_range: R) -> Result<TextSummary> {
         let [start, end] = to_range((byte_range.start_bound(), byte_range.end_bound()), self.len());
         check_range(start, end, self.len(), |i| self.is_char_boundary(i))?;
+        if start == end {
+            return Ok(TextSummary::default());
+        }
 
         let offset = self.byte_range[0];
-        let info = info_in_range(&self.root, &self.root_info, offset + start, offset + end);
-        Ok(info.into())
+        info_in_range(&self.root, &self.root_info, offset + start, offset + end)
+            .map(Into::into)
+            .ok_or(NonCharBoundary)
     }
 }
 
@@ -151,6 +155,9 @@ impl RopeSlice<'_> {
     pub fn try_text_summary<R: RangeBounds<usize>>(&self, byte_range: R) -> Result<TextSummary> {
         let [start, end] = to_range((byte_range.start_bound(), byte_range.end_bound()), self.len());
         check_range(start, end, self.len(), |i| self.is_char_boundary(i))?;
+        if start == end {
+            return Ok(TextSummary::default());
+        }
 
         let info = match self.0 {
             SliceInner::Rope {
@@ -158,12 +165,14 @@ impl RopeSlice<'_> {
                 root_info,
                 byte_range,
             } => info_in_range(root, root_info, byte_range[0] + start, byte_range[0] + end),
-            SliceInner::Str(text) => TextInfo::from_str(&text[start..end]),
+            SliceInner::Str(text) => text.get(start..end).map(TextInfo::from_str),
         };
-        Ok(info.into())
+        info.map(Into::into).ok_or(NonCharBoundary)
     }
 }
 
+/// Checks the range ends.  For a non-empty range, the char boundaries are
+/// checked later, in `info_in_range`.
 fn check_range(
     start: usize,
     end: usize,
@@ -176,7 +185,7 @@ fn check_range(
     if end > len {
         return Err(OutOfBounds);
     }
-    if !is_char_boundary(start) || !is_char_boundary(end) {
+    if start == end && !is_char_boundary(start) {
         return Err(NonCharBoundary);
     }
     Ok(())
@@ -260,5 +269,17 @@ mod tests {
         #[allow(clippy::reversed_empty_ranges)]
         let rev = 6..3;
         assert_eq!(r.try_text_summary(rev), Err(InvalidRange));
+
+        // Many leaves, so the bad ends land in different leaves.
+        let text = "こんにちは🐸".repeat(20);
+        let r = Rope::from_str(&text);
+        let len = text.len();
+        for i in (0..len).filter(|&i| !text.is_char_boundary(i)) {
+            assert_eq!(r.try_text_summary(i..len), Err(NonCharBoundary));
+            assert_eq!(r.try_text_summary(0..i), Err(NonCharBoundary));
+            assert_eq!(r.try_text_summary(i..i), Err(NonCharBoundary));
+            assert_eq!(r.slice(..).try_text_summary(0..i), Err(NonCharBoundary));
+            assert_eq!(r.slice(..).try_text_summary(i..i), Err(NonCharBoundary));
+        }
     }
 }

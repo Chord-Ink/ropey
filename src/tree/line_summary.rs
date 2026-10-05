@@ -9,7 +9,7 @@
 //! Only LF starts a row.  CR is an ordinary char here, as in Zed's
 //! `TextSummary`.
 
-use str_indices::{chars, utf16};
+use str_indices::utf16;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
 pub(crate) struct LineSummary {
@@ -42,86 +42,87 @@ impl LineSummary {
 
     /// Scans `text`, whose total char and UTF-16 counts are `char_count` and
     /// `utf16_count`.  Returns the summary and the number of LFs.
+    ///
+    /// Reads eight bytes at a time and marks LFs and utf8 continuation bytes
+    /// with plain u64 math.  A row's char count is its byte count minus the
+    /// continuation bytes in it.
     pub(crate) fn from_str(text: &str, char_count: usize, utf16_count: usize) -> (Self, usize) {
-        let first_lf = match find_lf(text) {
-            Some(i) => i,
-            None => {
-                let summary = LineSummary {
-                    last_line_bytes: text.len() as u32,
-                    first_line_chars: char_count as u32,
-                    last_line_chars: char_count as u32,
-                    last_line_utf16: utf16_count as u32,
-                    longest_row: 0,
-                    longest_row_chars: char_count as u32,
-                };
-                return (summary, 0);
-            }
-        };
+        let bytes = text.as_bytes();
+        let all_ascii = char_count == bytes.len();
 
-        // Rows are split at LF bytes, which are always char boundaries.
-        let all_ascii = char_count == text.len();
-        let count_chars = |row: &str| -> usize {
-            if all_ascii {
-                row.len()
-            } else {
-                chars::count(row)
-            }
-        };
-
-        let first_line_chars = count_chars(&text[..first_lf]);
+        let mut rows = 0;
+        let mut first_line_chars = 0;
         let mut longest_row = 0;
-        let mut longest_row_chars = first_line_chars;
+        let mut longest_row_chars = 0;
+        let mut row_start = 0;
+        let mut row_start_cont = 0;
+        let mut cont_before_word = 0;
 
-        // Walk the remaining rows.  A row's char count is at most its byte
-        // count, so rows that are not longer in bytes than the current
-        // longest row are skipped without counting.
-        let mut row = 0;
-        let mut row_start = first_lf + 1;
-        let last_row_start;
-        loop {
-            row += 1;
-            let row_end = match find_lf(&text[row_start..]) {
-                Some(i) => row_start + i,
-                None => {
-                    last_row_start = row_start;
-                    break;
-                }
-            };
-            if row_end - row_start > longest_row_chars {
-                let n = count_chars(&text[row_start..row_end]);
-                if n > longest_row_chars {
-                    longest_row = row;
-                    longest_row_chars = n;
-                }
+        let mut word_start = 0;
+        let words = bytes.chunks_exact(8);
+        let tail = {
+            let rest = words.remainder();
+            let mut buf = [0u8; 8];
+            buf[..rest.len()].copy_from_slice(rest);
+            u64::from_le_bytes(buf)
+        };
+        for word in words.map(|w| u64::from_le_bytes(w.try_into().unwrap())).chain([tail]) {
+            let cont = if all_ascii { 0 } else { cont_bits(word) };
+
+            let mut lfs = lf_bits(word);
+            if lfs == 0 {
+                cont_before_word += cont.count_ones() as usize;
+                word_start += 8;
+                continue;
             }
-            row_start = row_end + 1;
+            while lfs != 0 {
+                let bit = lfs.trailing_zeros() as usize;
+                let pos = word_start + bit / 8;
+                let cont_at = cont_before_word + (cont & ((1u64 << bit) - 1)).count_ones() as usize;
+                let chars = (pos - row_start) - (cont_at - row_start_cont);
+                if rows == 0 {
+                    first_line_chars = chars;
+                    longest_row_chars = chars;
+                } else if chars > longest_row_chars {
+                    longest_row = rows;
+                    longest_row_chars = chars;
+                }
+                rows += 1;
+                row_start = pos + 1;
+                row_start_cont = cont_at;
+                lfs &= lfs - 1;
+            }
+
+            cont_before_word += cont.count_ones() as usize;
+            word_start += 8;
         }
 
-        let last = &text[last_row_start..];
-        let last_line_chars = if all_ascii {
-            last.len()
-        } else {
-            chars::count(last)
-        };
-        if last_line_chars > longest_row_chars {
-            longest_row = row;
+        let last_line_bytes = bytes.len() - row_start;
+        let last_line_chars = last_line_bytes - (cont_before_word - row_start_cont);
+        if rows == 0 {
+            first_line_chars = last_line_chars;
+            longest_row_chars = last_line_chars;
+        } else if last_line_chars > longest_row_chars {
+            longest_row = rows;
             longest_row_chars = last_line_chars;
         }
         let last_line_utf16 = if all_ascii {
-            last.len()
+            last_line_bytes
+        } else if rows == 0 {
+            utf16_count
         } else {
-            last_line_chars + utf16::count_surrogates(last)
+            last_line_chars + utf16::count_surrogates(&text[row_start..])
         };
 
         let summary = LineSummary {
-            last_line_bytes: last.len() as u32,
+            last_line_bytes: last_line_bytes as u32,
             first_line_chars: first_line_chars as u32,
             last_line_chars: last_line_chars as u32,
             last_line_utf16: last_line_utf16 as u32,
             longest_row: longest_row as u32,
             longest_row_chars: longest_row_chars as u32,
         };
-        (summary, row)
+        (summary, rows)
     }
 
     /// Combines the summaries of two texts as if they were joined.
@@ -169,24 +170,25 @@ impl LineSummary {
     }
 }
 
-/// Byte index of the first LF in `text`.
+const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+
+/// Top bit set in each byte of `word` that is an LF.
 #[inline(always)]
-pub(crate) fn find_lf(text: &str) -> Option<usize> {
-    #[cfg(feature = "memchr")]
-    {
-        memchr::memchr(b'\n', text.as_bytes())
-    }
-    #[cfg(not(feature = "memchr"))]
-    {
-        text.find('\n')
-    }
+fn lf_bits(word: u64) -> u64 {
+    let v = word ^ 0x0A0A_0A0A_0A0A_0A0A;
+    !(((v & !HIGH_BITS) + !HIGH_BITS) | v) & HIGH_BITS
 }
 
-//=============================================================
+/// Top bit set in each byte of `word` that is a utf8 continuation byte.
+#[inline(always)]
+fn cont_bits(word: u64) -> u64 {
+    word & !(word << 1) & HIGH_BITS
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use str_indices::chars;
 
     fn scan(text: &str) -> (LineSummary, usize) {
         let c = chars::count(text);
@@ -234,7 +236,8 @@ mod tests {
 
     #[test]
     fn from_str_matches_naive_scan() {
-        for text in TEXTS {
+        let long = format!("{}\n{}", "é🐸x".repeat(40), "\nab".repeat(50));
+        for text in TEXTS.iter().copied().chain([long.as_str()]) {
             assert_eq!(scan(text), naive(text), "{text:?}");
         }
     }
