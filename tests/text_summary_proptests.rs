@@ -64,6 +64,7 @@ enum Op {
     KeepLeft(f64),
     KeepRight(f64),
     SplitJoin(f64),
+    SliceJoin(f64, f64),
     Move(f64, f64, f64),
 }
 
@@ -77,6 +78,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         f.clone().prop_map(Op::KeepLeft),
         f.clone().prop_map(Op::KeepRight),
         f.clone().prop_map(Op::SplitJoin),
+        (f.clone(), f.clone()).prop_map(|(a, b)| Op::SliceJoin(a, b)),
         (f.clone(), f.clone(), f).prop_map(|(a, b, c)| Op::Move(a, b, c)),
     ]
 }
@@ -123,6 +125,15 @@ fn apply(rope: &mut Rope, text: &mut String, op: &Op) {
             let i = floor(text, *a);
             let right = rope.split_off(i);
             rope.append(right);
+        }
+        Op::SliceJoin(a, b) => {
+            // Rebuilds the rope from owned slices, the way `text`'s
+            // `RopeBuilder` does: prefix, then the middle, then the suffix.
+            let (i, j) = (floor(text, a.min(*b)), floor(text, a.max(*b)));
+            let mut r = Rope::from(rope.slice(..i));
+            r.append(Rope::from(rope.slice(i..j)));
+            r.append(Rope::from(rope.slice(j..)));
+            *rope = r;
         }
         Op::Move(a, b, c) => {
             // Cuts a range out with two splits and joins it back elsewhere,
