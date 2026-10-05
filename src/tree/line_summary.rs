@@ -8,6 +8,9 @@
 //!
 //! Only LF starts a row.  CR is an ordinary char here, as in Zed's
 //! `TextSummary`.
+//!
+//! Row lengths and row indices are u32, as in Zed.  A value that does not
+//! fit panics in every build, release included, instead of wrapping.
 
 use str_indices::{chars, lines_lf, utf16};
 
@@ -117,12 +120,12 @@ impl LineSummary {
         };
 
         let summary = LineSummary {
-            last_line_bytes: last_line_bytes as u32,
-            first_line_chars: first_line_chars as u32,
-            last_line_chars: last_line_chars as u32,
-            last_line_utf16: last_line_utf16 as u32,
-            longest_row: longest_row as u32,
-            longest_row_chars: longest_row_chars as u32,
+            last_line_bytes: to_u32(last_line_bytes),
+            first_line_chars: to_u32(first_line_chars),
+            last_line_chars: to_u32(last_line_chars),
+            last_line_utf16: to_u32(last_line_utf16),
+            longest_row: to_u32(longest_row),
+            longest_row_chars: to_u32(longest_row_chars),
         };
         (summary, rows)
     }
@@ -149,12 +152,12 @@ impl LineSummary {
 
         let mut s = self;
         if row_start.is_none() {
-            s.first_line_chars += added_chars as u32;
+            s.first_line_chars = add(s.first_line_chars, added_chars);
         }
         if row_end.is_none() {
-            s.last_line_bytes += added_bytes as u32;
-            s.last_line_chars += added_chars as u32;
-            s.last_line_utf16 += added_utf16 as u32;
+            s.last_line_bytes = add(s.last_line_bytes, added_bytes);
+            s.last_line_chars = add(s.last_line_chars, added_chars);
+            s.last_line_utf16 = add(s.last_line_utf16, added_utf16);
         }
 
         let (row, row_chars) = match (row_start, row_end) {
@@ -179,11 +182,11 @@ impl LineSummary {
                 } else {
                     rows - lines_lf::count_breaks(&text[end..])
                 };
-                (row, (old_chars + added_chars) as u32)
+                (row, to_u32(old_chars + added_chars))
             }
         };
 
-        let row = row as u32;
+        let row = to_u32(row);
         if row_chars > s.longest_row_chars
             || (row_chars == s.longest_row_chars && row < s.longest_row)
         {
@@ -200,28 +203,28 @@ impl LineSummary {
         let mut longest_row = self.longest_row;
         let mut longest_row_chars = self.longest_row_chars;
 
-        let joined_chars = self.last_line_chars + rhs.first_line_chars;
+        let joined_chars = add(self.last_line_chars, rhs.first_line_chars as usize);
         if joined_chars > longest_row_chars {
-            longest_row = rows as u32;
+            longest_row = to_u32(rows);
             longest_row_chars = joined_chars;
         }
         if rhs.longest_row_chars > longest_row_chars {
-            longest_row = rows as u32 + rhs.longest_row;
+            longest_row = add(rhs.longest_row, rows);
             longest_row_chars = rhs.longest_row_chars;
         }
 
         let first_line_chars = if rows == 0 {
-            self.first_line_chars + rhs.first_line_chars
+            add(self.first_line_chars, rhs.first_line_chars as usize)
         } else {
             self.first_line_chars
         };
 
         if rhs_rows == 0 {
             LineSummary {
-                last_line_bytes: self.last_line_bytes + rhs.last_line_bytes,
+                last_line_bytes: add(self.last_line_bytes, rhs.last_line_bytes as usize),
                 first_line_chars,
-                last_line_chars: self.last_line_chars + rhs.last_line_chars,
-                last_line_utf16: self.last_line_utf16 + rhs.last_line_utf16,
+                last_line_chars: add(self.last_line_chars, rhs.last_line_chars as usize),
+                last_line_utf16: add(self.last_line_utf16, rhs.last_line_utf16 as usize),
                 longest_row,
                 longest_row_chars,
             }
@@ -236,6 +239,30 @@ impl LineSummary {
             }
         }
     }
+}
+
+/// `n` as u32.  Panics in every build when it does not fit.
+#[inline(always)]
+fn to_u32(n: usize) -> u32 {
+    match u32::try_from(n) {
+        Ok(n) => n,
+        Err(_) => too_large(),
+    }
+}
+
+/// `a + b` as u32.  Panics in every build when the sum does not fit.
+#[inline(always)]
+fn add(a: u32, b: usize) -> u32 {
+    match u32::try_from(b).ok().and_then(|b| a.checked_add(b)) {
+        Some(n) => n,
+        None => too_large(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn too_large() -> ! {
+    panic!("a row length or row index does not fit in u32")
 }
 
 const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
@@ -320,6 +347,47 @@ mod tests {
                 assert_eq!((sa.concat(ra, sb, rb), ra + rb), naive(&joined), "{a:?} + {b:?}");
             }
         }
+    }
+
+    fn one_row(len: u32) -> LineSummary {
+        LineSummary {
+            last_line_bytes: len,
+            first_line_chars: len,
+            last_line_chars: len,
+            last_line_utf16: len,
+            longest_row: 0,
+            longest_row_chars: len,
+        }
+    }
+
+    #[test]
+    fn concat_fills_u32_rows_exactly() {
+        let joined = one_row(u32::MAX - 1).concat(0, one_row(1), 0);
+        assert_eq!(joined, one_row(u32::MAX));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in u32")]
+    fn concat_panics_when_a_row_is_longer_than_u32() {
+        one_row(u32::MAX).concat(0, one_row(1), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in u32")]
+    fn concat_panics_when_a_row_index_is_past_u32() {
+        let (row, rows) = scan("\nab");
+        one_row(1).concat(u32::MAX as usize, row, rows);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in u32")]
+    fn insert_in_row_panics_when_the_row_is_longer_than_u32() {
+        let (summary, rows) = scan("a");
+        let summary = LineSummary {
+            last_line_bytes: u32::MAX,
+            ..summary
+        };
+        summary.insert_in_row("a", 1, rows, true, [1, 1, 1]);
     }
 
     #[test]
