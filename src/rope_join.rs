@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    tree::{Children, Node, TextInfo},
+    tree::{Children, Node, NodeInfo},
     Error::*,
     Result, Rope,
 };
@@ -112,7 +112,7 @@ impl Rope {
 
         let mut right = Rope {
             root: self.root.split(byte_idx),
-            root_info: TextInfo::new(),
+            root_info: NodeInfo::new(),
             byte_range: [0, 0],
         };
 
@@ -126,7 +126,7 @@ impl Rope {
 
     /// Turns a "disconnected slice" into a normal rope.
     fn make_whole(&mut self) {
-        if self.byte_range[0] != 0 || self.byte_range[1] != self.root_info.bytes {
+        if self.byte_range[0] != 0 || self.byte_range[1] != self.root_info.counts.bytes {
             self.trim_disconnected_slice();
         }
     }
@@ -136,7 +136,7 @@ impl Rope {
         self.root.partial_rebalance();
         self.pull_up_singular_nodes();
         self.root_info = self.root.text_info();
-        self.byte_range = [0, self.root_info.bytes];
+        self.byte_range = [0, self.root_info.counts.bytes];
     }
 }
 

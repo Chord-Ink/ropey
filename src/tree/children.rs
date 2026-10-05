@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use super::{node::Node, text_info::TextInfo, MAX_CHILDREN, MAX_TEXT_SIZE};
+use super::{
+    node::Node,
+    text_info::{NodeInfo, TextInfo},
+    MAX_CHILDREN, MAX_TEXT_SIZE,
+};
 
 #[cfg(any(
     feature = "metric_lines_lf",
@@ -38,29 +42,40 @@ impl Children {
         self.0.nodes_mut()
     }
 
-    /// Access to the info array.
+    /// Access to the counts array.
     #[inline(always)]
     pub fn info(&self) -> &[TextInfo] {
         self.0.info()
     }
 
-    /// Mutable access to the info array.
+    /// The full info of the child at `idx`: its counts, and with
+    /// `text_summary` its line summary.
     #[inline(always)]
-    pub fn info_mut(&mut self) -> &mut [TextInfo] {
-        self.0.info_mut()
+    pub fn node_info(&self, idx: usize) -> NodeInfo {
+        NodeInfo {
+            counts: self.0.info()[idx],
+
+            #[cfg(feature = "text_summary")]
+            line_summary: self.0.lines()[idx],
+        }
     }
 
-    /// Mutable access to both the info and nodes arrays simultaneously.
+    /// Sets the full info of the child at `idx`.
     #[inline(always)]
-    pub fn data_mut(&mut self) -> (&mut [TextInfo], &mut [Node]) {
-        self.0.data_mut()
+    pub fn set_node_info(&mut self, idx: usize, info: NodeInfo) {
+        self.0.info_mut()[idx] = info.counts;
+
+        #[cfg(feature = "text_summary")]
+        {
+            self.0.lines_mut()[idx] = info.line_summary;
+        }
     }
 
     /// Pushes an item onto the end of the child array.
     ///
     /// Increases length by one.  Panics if already full.
     #[inline(always)]
-    pub fn push(&mut self, item: (TextInfo, Node)) {
+    pub fn push(&mut self, item: (NodeInfo, Node)) {
         self.0.push(item);
         self.update_unbalance_flag(self.len() - 1);
     }
@@ -69,7 +84,7 @@ impl Children {
     /// returning the right half.
     ///
     /// This works even when the array is full.
-    pub fn push_split(&mut self, new_child: (TextInfo, Node)) -> Self {
+    pub fn push_split(&mut self, new_child: (NodeInfo, Node)) -> Self {
         let r_count = (self.len() + 1) / 2;
         let l_count = (self.len() + 1) - r_count;
 
@@ -89,8 +104,7 @@ impl Children {
         debug_assert_eq!(idx1 + 1, idx2);
         debug_assert!(idx2 < self.len());
 
-        let ((info1, node1), (info2, node2)) = self.get_two_mut(idx1, idx2);
-        match (node1, node2) {
+        match self.get_two_nodes_mut(idx1, idx2) {
             (&mut Node::Leaf(ref mut text1), &mut Node::Leaf(ref mut text2)) => {
                 let text1 = Arc::make_mut(text1);
                 text1.append_str(text2.text());
@@ -108,7 +122,8 @@ impl Children {
             _ => panic!("Can't merge two nodes of different types."),
         }
 
-        *info1 += *info2;
+        let info = self.node_info(idx1) + self.node_info(idx2);
+        self.set_node_info(idx1, info);
         self.remove(idx2);
         self.update_unbalance_flag(idx1);
     }
@@ -121,15 +136,13 @@ impl Children {
         debug_assert_eq!(idx1 + 1, idx2);
         debug_assert!(idx2 < self.len());
 
-        let ((info1, node1), (info2, node2)) = self.get_two_mut(idx1, idx2);
-        match (node1, node2) {
+        let (info1, info2) = match self.get_two_nodes_mut(idx1, idx2) {
             (Node::Leaf(ref mut text1), Node::Leaf(ref mut text2)) => {
                 let text1 = Arc::make_mut(text1);
                 let text2 = Arc::make_mut(text2);
                 text1.distribute(text2);
 
-                *info1 = text1.text_info();
-                *info2 = text2.text_info();
+                (text1.text_info(), text2.text_info())
             }
 
             (Node::Internal(ref mut children1), Node::Internal(ref mut children2)) => {
@@ -145,12 +158,13 @@ impl Children {
                     lhs.0.steal_range_from(lhs.len(), &mut rhs.0, [0, end]);
                 }
 
-                *info1 = lhs.combined_text_info();
-                *info2 = rhs.combined_text_info();
+                (lhs.combined_text_info(), rhs.combined_text_info())
             }
 
             _ => panic!("Can't distribute data between two nodes of different types."),
-        }
+        };
+        self.set_node_info(idx1, info1);
+        self.set_node_info(idx2, info2);
         self.update_unbalance_flag(idx1);
         self.update_unbalance_flag(idx2);
     }
@@ -194,7 +208,7 @@ impl Children {
     ///
     /// Decreases length by one.  Panics if already empty.
     #[inline(always)]
-    pub fn pop(&mut self) -> (TextInfo, Node) {
+    pub fn pop(&mut self) -> (NodeInfo, Node) {
         self.0.pop()
     }
 
@@ -203,7 +217,7 @@ impl Children {
     /// Increases length by one.  Panics if already full.  Preserves ordering
     /// of the other items.
     #[inline(always)]
-    pub fn insert(&mut self, idx: usize, item: (TextInfo, Node)) {
+    pub fn insert(&mut self, idx: usize, item: (NodeInfo, Node)) {
         self.0.insert(idx, item);
         self.update_unbalance_flag(idx);
     }
@@ -212,7 +226,7 @@ impl Children {
     /// the right half.
     ///
     /// This works even when the array is full.
-    pub fn insert_split(&mut self, idx: usize, item: (TextInfo, Node)) -> Self {
+    pub fn insert_split(&mut self, idx: usize, item: (NodeInfo, Node)) -> Self {
         assert!(self.len() > 0);
         assert!(idx <= self.len());
         let extra = if idx < self.len() {
@@ -230,7 +244,7 @@ impl Children {
     ///
     /// Decreases length by one.  Preserves ordering of the other items.
     #[inline(always)]
-    pub fn remove(&mut self, idx: usize) -> (TextInfo, Node) {
+    pub fn remove(&mut self, idx: usize) -> (NodeInfo, Node) {
         self.0.remove(idx)
     }
 
@@ -253,27 +267,16 @@ impl Children {
         other
     }
 
-    /// Fetches two children simultaneously, returning mutable references
-    /// to their info and nodes.
+    /// Fetches two child nodes simultaneously, returning mutable references
+    /// to them.
     ///
     /// `idx1` must be less than `idx2`.
-    pub fn get_two_mut(
-        &mut self,
-        idx1: usize,
-        idx2: usize,
-    ) -> ((&mut TextInfo, &mut Node), (&mut TextInfo, &mut Node)) {
+    pub fn get_two_nodes_mut(&mut self, idx1: usize, idx2: usize) -> (&mut Node, &mut Node) {
         assert!(idx1 < idx2);
         assert!(idx2 < self.len());
 
-        let split_idx = idx1 + 1;
-        let (info, nodes) = self.data_mut();
-        let (info1, info2) = info.split_at_mut(split_idx);
-        let (nodes1, nodes2) = nodes.split_at_mut(split_idx);
-
-        (
-            (&mut info1[idx1], &mut nodes1[idx1]),
-            (&mut info2[idx2 - split_idx], &mut nodes2[idx2 - split_idx]),
-        )
+        let (nodes1, nodes2) = self.nodes_mut().split_at_mut(idx2);
+        (&mut nodes1[idx1], &mut nodes2[0])
     }
 
     #[inline(always)]
@@ -303,17 +306,14 @@ impl Children {
     }
 
     #[inline(always)]
-    pub fn combined_text_info(&self) -> TextInfo {
-        self.info()
-            .iter()
-            .fold(TextInfo::new(), |acc, &next| acc + next)
+    pub fn combined_text_info(&self) -> NodeInfo {
+        (0..self.len()).fold(NodeInfo::new(), |acc, i| acc + self.node_info(i))
     }
 
     /// Returns the child index and left-side-accumulated text info of the
     /// first child that matches the given predicate.
     ///
-    /// If no child matches the predicate, the last child is returned.  Only
-    /// the counts are accumulated: the line summary of the result is empty.
+    /// If no child matches the predicate, the last child is returned.
     #[cfg(any(
         feature = "metric_chars",
         feature = "metric_utf16",
@@ -332,7 +332,7 @@ impl Children {
         let mut accum = TextInfo::new();
         let mut idx = 0;
         while idx < (self.len() - 1) {
-            let next_accum = accum.add_counts(self.info()[idx]);
+            let next_accum = accum + self.info()[idx];
             if pred(next_accum) {
                 break;
             }
@@ -470,7 +470,9 @@ impl Children {
 /// Try to keep this as small as possible, and implement functionality on
 /// `Children` via the safe APIs whenever possible.
 mod inner {
-    use super::{Node, TextInfo, MAX_CHILDREN};
+    #[cfg(feature = "text_summary")]
+    use super::super::text_info::LineSummary;
+    use super::{Node, NodeInfo, TextInfo, MAX_CHILDREN};
     use std::{
         fmt,
         mem::{self, MaybeUninit},
@@ -485,8 +487,8 @@ mod inner {
     }
 
     /// This is essentially a fixed-capacity, stack-allocated `Vec`.  However,
-    /// it actually containts _two_ arrays rather than just one, but which
-    /// share a length.
+    /// it actually containts _two_ arrays rather than just one (three with
+    /// `text_summary`), but which share a length.
     #[repr(C)]
     pub(crate) struct ChildrenInternal {
         /// An array of the child nodes.
@@ -497,6 +499,11 @@ mod inner {
         info: [MaybeUninit<TextInfo>; MAX_CHILDREN],
         subtree_unbalance_flags: u32,
         len: u8,
+        /// An array of the child node line summaries.  Kept apart from
+        /// `info`, and after `len`, so position searches read less memory.
+        /// Entries from `len` on are stale.
+        #[cfg(feature = "text_summary")]
+        lines: [LineSummary; MAX_CHILDREN],
     }
 
     impl ChildrenInternal {
@@ -510,6 +517,8 @@ mod inner {
                 info: unsafe { MaybeUninit::uninit().assume_init() },
                 subtree_unbalance_flags: 0,
                 len: 0,
+                #[cfg(feature = "text_summary")]
+                lines: [LineSummary::new(); MAX_CHILDREN],
             }
         }
 
@@ -551,15 +560,19 @@ mod inner {
             unsafe { mem::transmute(&mut self.info[..(self.len as usize)]) }
         }
 
-        /// Mutable access to both the info and nodes arrays simultaneously.
+        /// Access to the line summary array.
+        #[cfg(feature = "text_summary")]
         #[inline(always)]
-        pub fn data_mut(&mut self) -> (&mut [TextInfo], &mut [Node]) {
-            // SAFETY: `MaybeUninit<T>` is layout compatible with `T`, and
-            // the info from `0..len` are guaranteed to be initialized
-            (
-                unsafe { mem::transmute(&mut self.info[..(self.len as usize)]) },
-                unsafe { mem::transmute(&mut self.nodes[..(self.len as usize)]) },
-            )
+        pub fn lines(&self) -> &[LineSummary] {
+            &self.lines[..self.len()]
+        }
+
+        /// Mutable access to the line summary array.
+        #[cfg(feature = "text_summary")]
+        #[inline(always)]
+        pub fn lines_mut(&mut self) -> &mut [LineSummary] {
+            let len = self.len();
+            &mut self.lines[..len]
         }
 
         #[inline(always)]
@@ -597,9 +610,13 @@ mod inner {
         /// Pushes an item onto the end of the array.
         ///
         /// Increases length by one.  Panics if already full.
-        pub fn push(&mut self, item: (TextInfo, Node)) {
+        pub fn push(&mut self, item: (NodeInfo, Node)) {
             assert!(self.len() < MAX_CHILDREN);
-            self.info[self.len()] = MaybeUninit::new(item.0);
+            self.info[self.len()] = MaybeUninit::new(item.0.counts);
+            #[cfg(feature = "text_summary")]
+            {
+                self.lines[self.len()] = item.0.line_summary;
+            }
             self.nodes[self.len as usize] = MaybeUninit::new(item.1);
             // We have just initialized both `info` and `node` within
             // `0..=len`, so we can increase `len`.
@@ -609,7 +626,7 @@ mod inner {
         /// Pops an item off the end of the array and returns it.
         ///
         /// Decreases length by one.  Panics if already empty.
-        pub fn pop(&mut self) -> (TextInfo, Node) {
+        pub fn pop(&mut self) -> (NodeInfo, Node) {
             assert!(self.len() > 0);
             self.len -= 1;
 
@@ -618,7 +635,12 @@ mod inner {
             // SAFETY: before this, `len` was long enough to guarantee that
             // both `info` and `node` must be init.  We just decreased the
             // length, guaranteeing that the elements will never be read again.
-            (unsafe { self.info[self.len()].assume_init() }, unsafe {
+            let info = NodeInfo {
+                counts: unsafe { self.info[self.len()].assume_init() },
+                #[cfg(feature = "text_summary")]
+                line_summary: self.lines[self.len()],
+            };
+            (info, unsafe {
                 ptr::read(&self.nodes[self.len()]).assume_init()
             })
         }
@@ -627,7 +649,7 @@ mod inner {
         ///
         /// Increases length by one.  Panics if already full.  Preserves ordering
         /// of the other items.
-        pub fn insert(&mut self, idx: usize, item: (TextInfo, Node)) {
+        pub fn insert(&mut self, idx: usize, item: (NodeInfo, Node)) {
             assert!(idx <= self.len());
             assert!(self.len() < MAX_CHILDREN);
 
@@ -643,9 +665,15 @@ mod inner {
                 ptr::copy(ptr.add(idx), ptr.add(idx + 1), len - idx);
             }
             self.info.copy_within(idx..len, idx + 1);
+            #[cfg(feature = "text_summary")]
+            self.lines.copy_within(idx..len, idx + 1);
 
             // Put the new items in.
-            self.info[idx] = MaybeUninit::new(item.0);
+            self.info[idx] = MaybeUninit::new(item.0.counts);
+            #[cfg(feature = "text_summary")]
+            {
+                self.lines[idx] = item.0.line_summary;
+            }
             self.nodes[idx] = MaybeUninit::new(item.1);
 
             // The unbalance flags.
@@ -660,7 +688,7 @@ mod inner {
         /// Removes the item at the given index from the the array.
         ///
         /// Decreases length by one.  Preserves ordering of the other items.
-        pub fn remove(&mut self, idx: usize) -> (TextInfo, Node) {
+        pub fn remove(&mut self, idx: usize) -> (NodeInfo, Node) {
             assert!(idx < self.len());
 
             // Read out the item.
@@ -669,9 +697,12 @@ mod inner {
             // for the node, because that slot will either be overwritten by
             // another node or will be marked invalid, so this behaves as a move,
             // not a copy.
-            let item = (unsafe { self.info[idx].assume_init() }, unsafe {
-                self.nodes[idx].assume_init_read()
-            });
+            let info = NodeInfo {
+                counts: unsafe { self.info[idx].assume_init() },
+                #[cfg(feature = "text_summary")]
+                line_summary: self.lines[idx],
+            };
+            let item = (info, unsafe { self.nodes[idx].assume_init_read() });
 
             let len = self.len();
             // This unsafe code simply shifts the elements of the arrays over
@@ -684,6 +715,8 @@ mod inner {
                 ptr::copy(ptr.add(idx + 1), ptr.add(idx), len - idx - 1);
             }
             self.info.copy_within((idx + 1)..len, idx);
+            #[cfg(feature = "text_summary")]
+            self.lines.copy_within((idx + 1)..len, idx);
 
             // The unbalance flags.
             let low_mask = range_bitmask(0, idx);
@@ -730,6 +763,9 @@ mod inner {
 
                 // Text info.
                 self.info.copy_within(range[1]..self.len as usize, range[0]);
+                #[cfg(feature = "text_summary")]
+                self.lines
+                    .copy_within(range[1]..self.len as usize, range[0]);
 
                 // Move the unbalance flags.
                 let low_mask = range_bitmask(0, range[0]);
@@ -777,6 +813,9 @@ mod inner {
 
                 // Text info.
                 self.info.copy_within(to_idx..self.len as usize, to_end_idx);
+                #[cfg(feature = "text_summary")]
+                self.lines
+                    .copy_within(to_idx..self.len as usize, to_end_idx);
 
                 // The unbalance flags.
                 let low_mask = range_bitmask(0, to_idx);
@@ -804,6 +843,9 @@ mod inner {
                 // Text info.
                 self.info[to_idx..to_end_idx]
                     .copy_from_slice(&other.info[from_range[0]..from_range[1]]);
+                #[cfg(feature = "text_summary")]
+                self.lines[to_idx..to_end_idx]
+                    .copy_from_slice(&other.lines[from_range[0]..from_range[1]]);
 
                 // The unbalance flags.
                 let mask = range_bitmask(from_range[0], from_range[1]);
@@ -834,6 +876,10 @@ mod inner {
                 // Text info.
                 other
                     .info
+                    .copy_within(from_range[1]..other.len as usize, from_range[0]);
+                #[cfg(feature = "text_summary")]
+                other
+                    .lines
                     .copy_within(from_range[1]..other.len as usize, from_range[0]);
 
                 // The unbalance flags.
@@ -880,6 +926,12 @@ mod inner {
                 *dst_info = *src_info;
             }
 
+            // Copy the line summaries.
+            #[cfg(feature = "text_summary")]
+            {
+                clone_array.lines = self.lines;
+            }
+
             // Set length and copy the unbalance flags.
             clone_array.len = self.len;
             clone_array.subtree_unbalance_flags = self.subtree_unbalance_flags;
@@ -920,11 +972,12 @@ mod inner {
 
     impl fmt::Debug for ChildrenInternal {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            f.debug_struct("ChildrenInternal")
-                .field("nodes", &&self.nodes())
-                .field("info", &&self.info())
-                .field("len", &self.len())
-                .finish()
+            let mut d = f.debug_struct("ChildrenInternal");
+            d.field("nodes", &&self.nodes());
+            d.field("info", &&self.info());
+            #[cfg(feature = "text_summary")]
+            d.field("lines", &&self.lines());
+            d.field("len", &self.len()).finish()
         }
     }
 
@@ -945,11 +998,20 @@ mod inner {
             s
         }
 
-        fn make_info_and_node(text: &str) -> (TextInfo, Node) {
+        fn make_info_and_node(text: &str) -> (NodeInfo, Node) {
             (
-                TextInfo::from_str(text),
+                NodeInfo::from_str(text),
                 Node::Leaf(Arc::new(Text::from_str(text))),
             )
+        }
+
+        /// Checks the counts, line summary and text of child `i`.
+        fn assert_child(children: &ChildrenInternal, i: usize, text: &str) {
+            let info = NodeInfo::from_str(text);
+            assert_eq!(children.info()[i], info.counts);
+            #[cfg(feature = "text_summary")]
+            assert_eq!(children.lines()[i], info.line_summary);
+            assert_eq!(children.nodes()[i].leaf_text(), text);
         }
 
         fn make_children_full(unbalance_flag: bool) -> ChildrenInternal {
@@ -983,8 +1045,7 @@ mod inner {
                 children.push(make_info_and_node(&i_to_s(i)));
             }
             for i in 0..MAX_CHILDREN {
-                assert_eq!(children.info()[i].bytes, i_to_s(i).len());
-                assert_eq!(children.nodes()[i].leaf_text(), i_to_s(i).as_str());
+                assert_child(&children, i, &i_to_s(i));
             }
         }
 
@@ -996,7 +1057,7 @@ mod inner {
                 let (info, node) = children.pop();
 
                 assert_eq!(children.len(), i);
-                assert_eq!(info.bytes, i_to_s(i).len());
+                assert_eq!(info.counts.bytes, i_to_s(i).len());
                 assert_eq!(node.leaf_text(), i_to_s(i).as_str());
                 assert_eq!(!((!0) << i), children.subtree_unbalance_flags);
             }
@@ -1019,8 +1080,7 @@ mod inner {
                     _ => i_to_s(i - 2),
                 };
 
-                assert_eq!(children.info()[i].bytes, text.len());
-                assert_eq!(children.nodes()[i].leaf_text(), text.as_str());
+                assert_child(&children, i, &text);
             }
 
             let mut expected_bits = !((!0) << children.len());
@@ -1067,14 +1127,19 @@ mod inner {
 
             assert_eq!(children.len(), MAX_CHILDREN - 3);
 
-            assert_eq!(last.0.bytes, i_to_s(last_i).len());
+            assert_eq!(last.0.counts.bytes, i_to_s(last_i).len());
             assert_eq!(last.1.leaf_text(), i_to_s(last_i).as_str());
 
-            assert_eq!(first.0.bytes, i_to_s(0).len());
+            assert_eq!(first.0.counts.bytes, i_to_s(0).len());
             assert_eq!(first.1.leaf_text(), i_to_s(0).as_str());
 
-            assert_eq!(middle.0.bytes, i_to_s(2).len());
+            assert_eq!(middle.0.counts.bytes, i_to_s(2).len());
             assert_eq!(middle.1.leaf_text(), i_to_s(2).as_str());
+
+            let kept = (1..last_i).filter(|&i| i != 2);
+            for (i, original_i) in kept.enumerate() {
+                assert_child(&children, i, &i_to_s(original_i));
+            }
 
             assert_eq!(!((!0) << children.len()), children.subtree_unbalance_flags);
         }
@@ -1119,8 +1184,7 @@ mod inner {
                     let original_i = if i < range[0] { i } else { i + range_len };
                     let text = i_to_s(original_i);
 
-                    assert_eq!(children.info()[i].bytes, text.len());
-                    assert_eq!(children.nodes()[i].leaf_text(), text.as_str());
+                    assert_child(&children, i, &text);
                 }
 
                 assert_eq!(!((!0) << children.len()), children.subtree_unbalance_flags);
@@ -1146,8 +1210,7 @@ mod inner {
                         let original_i = if i < range[0] { i } else { i + range_len };
                         let text = i_to_s(original_i);
 
-                        assert_eq!(children_from.info()[i].bytes, text.len());
-                        assert_eq!(children_from.nodes()[i].leaf_text(), text.as_str());
+                        assert_child(&children_from, i, &text);
                     }
 
                     // Verify `children_to`.
@@ -1162,8 +1225,7 @@ mod inner {
                         };
                         let text = i_to_s(original_i);
 
-                        assert_eq!(children_to.info()[i].bytes, text.len());
-                        assert_eq!(children_to.nodes()[i].leaf_text(), text.as_str());
+                        assert_child(&children_to, i, &text);
                     }
 
                     assert_eq!(

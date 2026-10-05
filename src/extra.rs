@@ -86,12 +86,10 @@ pub mod esoterica {
     pub fn disconnect_slice(slice: RopeSlice) -> Option<Rope> {
         match slice {
             RopeSlice(SliceInner::Rope {
-                root,
-                root_info,
-                byte_range,
+                root, byte_range, ..
             }) => Some(Rope {
                 root: root.clone(),
-                root_info: *root_info,
+                root_info: root.text_info(),
                 byte_range: byte_range,
             }),
 

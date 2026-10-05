@@ -9,7 +9,7 @@ use crate::{
     rope_builder::RopeBuilder,
     slice::{RopeSlice, SliceInner},
     start_bound_to_num, str_utils,
-    tree::{Children, Node, Text, TextInfo, MAX_TEXT_SIZE},
+    tree::{Children, Node, NodeInfo, Text, TextInfo, MAX_TEXT_SIZE},
     ChunkCursor,
     Error::*,
     Result,
@@ -97,7 +97,7 @@ assert_eq!(middle, "lo みん");
 #[derive(Clone)]
 pub struct Rope {
     pub(crate) root: Node,
-    pub(crate) root_info: TextInfo,
+    pub(crate) root_info: NodeInfo,
 
     /// Specifies the sub-range of `root` to use as this rope's
     /// contents.  Normally just set to the full range of `root`, but
@@ -115,7 +115,7 @@ impl Rope {
     pub fn new() -> Self {
         Rope {
             root: Node::Leaf(Arc::new(Text::new())),
-            root_info: TextInfo::new(),
+            root_info: NodeInfo::new(),
             byte_range: [0; 2],
         }
     }
@@ -339,7 +339,7 @@ impl Rope {
     /// edits.
     pub(crate) fn trim_disconnected_slice(&mut self) {
         let trim_range_start = [0, self.byte_range[0]];
-        let trim_range_end = [self.byte_range[1], self.root_info.bytes];
+        let trim_range_end = [self.byte_range[1], self.root_info.counts.bytes];
 
         // Note: unlike with normal removal, we don't have to worry about crlf
         // splits because we know we're trimming off the ends, not removing a
@@ -350,7 +350,7 @@ impl Rope {
             .expect("Trimming to slice range should always succeed.");
 
         self.byte_range[0] = 0;
-        self.byte_range[1] = self.root_info.bytes;
+        self.byte_range[1] = self.root_info.counts.bytes;
     }
 
     //---------------------------------------------------------
@@ -510,7 +510,7 @@ impl Rope {
 
     #[inline(always)]
     fn get_root_info(&self) -> &TextInfo {
-        &self.root_info
+        &self.root_info.counts
     }
 
     #[inline(always)]
@@ -546,7 +546,7 @@ impl Rope {
         // If this is a "disconnected slice", rather than a normal rope, then
         // we need to first trim it to a normal rope before proceeding with
         // editing.
-        if self.byte_range[0] != 0 || self.byte_range[1] != self.root_info.bytes {
+        if self.byte_range[0] != 0 || self.byte_range[1] != self.root_info.counts.bytes {
             if !self.is_char_boundary(byte_idx) {
                 // Don't bother if the edit is going to fail anyway.
                 return Err(NonCharBoundary);
@@ -659,7 +659,7 @@ impl Rope {
             // If this is a "disconnected slice", rather than a normal rope,
             // then we need to first trim it to a normal rope before proceeding
             // with editing.
-            if rope.byte_range[0] != 0 || rope.byte_range[1] != rope.root_info.bytes {
+            if rope.byte_range[0] != 0 || rope.byte_range[1] != rope.root_info.counts.bytes {
                 rope.trim_disconnected_slice();
             }
 
@@ -745,7 +745,7 @@ impl Rope {
             self.root_info = children.combined_text_info();
         }
 
-        self.byte_range[1] = self.root_info.bytes;
+        self.byte_range[1] = self.root_info.counts.bytes;
 
         Ok(())
     }
@@ -759,13 +759,13 @@ impl Rope {
     #[inline(always)]
     fn remove_core_impl(&mut self, byte_range: [usize; 2]) -> Result<bool> {
         debug_assert!(byte_range[0] <= byte_range[1]);
-        debug_assert!(byte_range[1] <= self.root_info.bytes);
+        debug_assert!(byte_range[1] <= self.root_info.counts.bytes);
 
         // Special case: if we're removing everything, just replace with a
         // fresh new rope.  This is to ensure the invariant that an empty
         // rope is always composed of a single empty leaf, which is not
         // ensured by the general removal code.
-        if byte_range[0] == 0 && byte_range[1] == self.root_info.bytes {
+        if byte_range[0] == 0 && byte_range[1] == self.root_info.counts.bytes {
             *self = Rope::new();
             return Ok(false);
         }
@@ -773,7 +773,7 @@ impl Rope {
         let (new_info, created_boundary) =
             self.root.remove_byte_range(byte_range, self.root_info)?;
         self.root_info = new_info;
-        self.byte_range[1] = self.root_info.bytes;
+        self.byte_range[1] = self.root_info.counts.bytes;
 
         Ok(created_boundary)
     }

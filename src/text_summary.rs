@@ -6,7 +6,7 @@ use crate::{
     end_bound_to_num,
     slice::SliceInner,
     start_bound_to_num,
-    tree::{Node, TextInfo},
+    tree::{Node, NodeInfo},
     Error::*,
     Result, Rope, RopeSlice,
 };
@@ -39,15 +39,16 @@ pub struct TextSummary {
     pub longest_row_chars: usize,
 }
 
-impl From<TextInfo> for TextSummary {
+impl From<NodeInfo> for TextSummary {
     #[inline]
-    fn from(info: TextInfo) -> Self {
+    fn from(info: NodeInfo) -> Self {
+        let c = info.counts;
         let s = info.line_summary;
         TextSummary {
-            bytes: info.bytes,
-            chars: info.chars,
-            utf16: info.utf16,
-            line_breaks: info.line_breaks_lf,
+            bytes: c.bytes,
+            chars: c.chars,
+            utf16: c.utf16,
+            line_breaks: c.line_breaks_lf,
             last_line_bytes: s.last_line_bytes as usize,
             first_line_chars: s.first_line_chars as usize,
             last_line_chars: s.last_line_chars as usize,
@@ -58,29 +59,28 @@ impl From<TextInfo> for TextSummary {
     }
 }
 
-/// Text info of bytes `start..end` of `node`, whose own info is `node_info`.
-/// `start < end` must hold.
+/// Text info of bytes `start..end` of `node`.  `start < end` must hold.
 ///
 /// Whole children are taken from their stored info, so only the leaves at
 /// the two ends of the range are scanned.  Leaves always start and end on
 /// char boundaries, so the range ends are checked there, in those two
 /// leaves.  Returns `None` if one of them is not a char boundary.
-fn info_in_range(node: &Node, node_info: &TextInfo, start: usize, end: usize) -> Option<TextInfo> {
-    if start == 0 && end == node_info.bytes {
-        return Some(*node_info);
-    }
-
+fn info_in_range(node: &Node, start: usize, end: usize) -> Option<NodeInfo> {
     match node {
-        Node::Leaf(text) => text.text().get(start..end).map(TextInfo::from_str),
+        Node::Leaf(text) => text.text().get(start..end).map(NodeInfo::from_str),
         Node::Internal(children) => {
-            let mut acc = TextInfo::new();
+            let mut acc = NodeInfo::new();
             let mut child_start = 0;
-            for (info, child) in children.info().iter().zip(children.nodes()) {
+            for (i, info) in children.info().iter().enumerate() {
                 let child_end = child_start + info.bytes;
                 if child_end > start {
                     let s = start.max(child_start) - child_start;
                     let e = end.min(child_end) - child_start;
-                    acc += info_in_range(child, info, s, e)?;
+                    acc += if s == 0 && e == info.bytes {
+                        children.node_info(i)
+                    } else {
+                        info_in_range(&children.nodes()[i], s, e)?
+                    };
                 }
                 if child_end >= end {
                     break;
@@ -125,8 +125,11 @@ impl Rope {
             return Ok(TextSummary::default());
         }
 
-        let offset = self.byte_range[0];
-        info_in_range(&self.root, &self.root_info, offset + start, offset + end)
+        let [start, end] = [self.byte_range[0] + start, self.byte_range[0] + end];
+        if start == 0 && end == self.root_info.counts.bytes {
+            return Ok(self.root_info.into());
+        }
+        info_in_range(&self.root, start, end)
             .map(Into::into)
             .ok_or(NonCharBoundary)
     }
@@ -161,11 +164,9 @@ impl RopeSlice<'_> {
 
         let info = match self.0 {
             SliceInner::Rope {
-                root,
-                root_info,
-                byte_range,
-            } => info_in_range(root, root_info, byte_range[0] + start, byte_range[0] + end),
-            SliceInner::Str(text) => text.get(start..end).map(TextInfo::from_str),
+                root, byte_range, ..
+            } => info_in_range(root, byte_range[0] + start, byte_range[0] + end),
+            SliceInner::Str(text) => text.get(start..end).map(NodeInfo::from_str),
         };
         info.map(Into::into).ok_or(NonCharBoundary)
     }

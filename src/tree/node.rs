@@ -12,7 +12,16 @@ use crate::str_utils;
 ))]
 use crate::LineType;
 
-use super::{Children, Text, TextInfo, MAX_CHILDREN, MAX_TEXT_SIZE, MIN_CHILDREN, MIN_TEXT_SIZE};
+#[cfg(any(
+    feature = "metric_chars",
+    feature = "metric_utf16",
+    feature = "metric_lines_lf",
+    feature = "metric_lines_lf_cr",
+    feature = "metric_lines_unicode"
+))]
+use super::TextInfo;
+
+use super::{Children, NodeInfo, Text, MAX_CHILDREN, MAX_TEXT_SIZE, MIN_CHILDREN, MIN_TEXT_SIZE};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Node {
@@ -24,15 +33,9 @@ impl Node {
     /// Shallowly computes the text info of this node.
     ///
     /// Assumes that the info of this node's children is up to date.
-    pub(crate) fn text_info(&self) -> TextInfo {
+    pub(crate) fn text_info(&self) -> NodeInfo {
         match *self {
-            Node::Internal(ref children) => {
-                let mut acc_info = TextInfo::new();
-                for info in children.info() {
-                    acc_info += *info;
-                }
-                acc_info
-            }
+            Node::Internal(ref children) => children.combined_text_info(),
             Node::Leaf(ref text) => text.text_info(),
         }
     }
@@ -122,8 +125,8 @@ impl Node {
         byte_idx: usize,
         text: &str,
         bias_left: bool,
-        node_info: TextInfo,
-    ) -> Result<(TextInfo, Option<(TextInfo, Node)>)> {
+        node_info: NodeInfo,
+    ) -> Result<(NodeInfo, Option<(NodeInfo, Node)>)> {
         debug_assert!(text.len() <= (MAX_TEXT_SIZE - 4));
 
         match *self {
@@ -153,7 +156,7 @@ impl Node {
 
                 // Find the child we care about.
                 let (child_i, acc_byte_idx) = children.search_byte_idx_only(byte_idx, bias_left);
-                let info = children.info()[child_i];
+                let info = children.node_info(child_i);
 
                 // Recurse into the child.
                 let (l_info, residual) = children.nodes_mut()[child_i].insert_at_byte_idx(
@@ -162,7 +165,7 @@ impl Node {
                     bias_left,
                     info,
                 )?;
-                children.info_mut()[child_i] = l_info;
+                children.set_node_info(child_i, l_info);
                 children.update_unbalance_flag(child_i);
 
                 // Handle the residual node if there is one and return.  The
@@ -198,8 +201,8 @@ impl Node {
     pub fn remove_byte_range(
         &mut self,
         byte_idx_range: [usize; 2],
-        node_info: TextInfo,
-    ) -> Result<(TextInfo, bool)> {
+        node_info: NodeInfo,
+    ) -> Result<(NodeInfo, bool)> {
         debug_assert!(byte_idx_range[0] <= byte_idx_range[1]);
 
         match *self {
@@ -234,8 +237,8 @@ impl Node {
                     children.search_byte_idx_only(byte_idx_range[1], false);
 
                 // Text info of the the start and end children.
-                let start_info = children.info()[start_child_i];
-                let end_info = children.info()[end_child_i];
+                let start_info = children.node_info(start_child_i);
+                let end_info = children.node_info(end_child_i);
 
                 // Compute the start index relative to the contents of the
                 // start child, and the end index relative to the contents
@@ -245,7 +248,7 @@ impl Node {
 
                 // Simple case: the removal is entirely within a single child.
                 if start_child_i == end_child_i {
-                    if start_byte_idx == 0 && end_byte_idx == start_info.bytes {
+                    if start_byte_idx == 0 && end_byte_idx == start_info.counts.bytes {
                         // The removal happens to be exactly the whole child.
                         children.remove(start_child_i);
                         Ok((children.combined_text_info(), true))
@@ -253,7 +256,7 @@ impl Node {
                         let (new_child_info, created_boundary) = children.nodes_mut()
                             [start_child_i]
                             .remove_byte_range([start_byte_idx, end_byte_idx], start_info)?;
-                        children.info_mut()[start_child_i] = new_child_info;
+                        children.set_node_info(start_child_i, new_child_info);
                         children.update_unbalance_flag(start_child_i);
                         let new_info = if new_child_info.same_rows(&start_info) {
                             node_info.replace_counts(start_info, new_child_info)
@@ -270,9 +273,11 @@ impl Node {
 
                     // Handle partial removal of leftmost child.
                     if !remove_whole_start_child {
-                        let (new_info, _) = children.nodes_mut()[start_child_i]
-                            .remove_byte_range([start_byte_idx, start_info.bytes], start_info)?;
-                        children.info_mut()[start_child_i] = new_info;
+                        let (new_info, _) = children.nodes_mut()[start_child_i].remove_byte_range(
+                            [start_byte_idx, start_info.counts.bytes],
+                            start_info,
+                        )?;
+                        children.set_node_info(start_child_i, new_info);
                         children.update_unbalance_flag(start_child_i);
                     }
 
@@ -280,7 +285,7 @@ impl Node {
                     if !remove_whole_end_child {
                         let (new_info, _) = children.nodes_mut()[end_child_i]
                             .remove_byte_range([0, end_byte_idx], end_info)?;
-                        children.info_mut()[end_child_i] = new_info;
+                        children.set_node_info(end_child_i, new_info);
                         children.update_unbalance_flag(end_child_i);
                     }
 
@@ -341,7 +346,7 @@ impl Node {
     ///
     /// Returns the `Text` that contains the given index of the specified
     /// metric, and the left-side info of where it starts in the larger text of
-    /// the node tree.  The left-side info holds counts only, no line summary.
+    /// the node tree.
     ///
     /// - `metric_scanner`: a function that scans `Children` to find the
     ///   child that contains `metric_idx`, returning the child's index and
@@ -378,7 +383,7 @@ impl Node {
                 }
                 Node::Internal(ref children) => {
                     let (child_i, acc_info) = metric_scanner(children, metric_idx);
-                    left_info = left_info.add_counts(acc_info);
+                    left_info += acc_info;
                     node = &children.nodes()[child_i];
                     metric_idx = metric_subtractor(metric_idx, &acc_info);
                 }
@@ -548,15 +553,16 @@ impl Node {
     }
 
     /// Checks that all cached TextInfo in the tree is correct.
-    pub fn assert_accurate_text_info(&self) -> TextInfo {
+    pub fn assert_accurate_text_info(&self) -> NodeInfo {
         match *self {
             Node::Leaf(ref text) => {
                 // Freshly compute the relevant info from scratch.
-                TextInfo::from_str(text.text())
+                NodeInfo::from_str(text.text())
             }
             Node::Internal(ref children) => {
-                let mut acc_info = TextInfo::new();
-                for (node, &info) in children.nodes().iter().zip(children.info().iter()) {
+                let mut acc_info = NodeInfo::new();
+                for (i, node) in children.nodes().iter().enumerate() {
+                    let info = children.node_info(i);
                     assert_eq!(info, node.assert_accurate_text_info());
                     acc_info += info;
                 }

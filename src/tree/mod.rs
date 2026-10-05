@@ -6,7 +6,7 @@ mod node_join;
 mod text;
 mod text_info;
 
-pub(crate) use text_info::TextInfo;
+pub(crate) use text_info::{NodeInfo, TextInfo};
 
 #[cfg(not(any(test, feature = "__dev__small_chunks")))]
 mod constants {

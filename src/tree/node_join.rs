@@ -99,7 +99,7 @@ impl Node {
                 right.insert(0, (r_info, r_node));
 
                 let l_info = children.nodes()[child_i].text_info();
-                children.info_mut()[child_i] = l_info;
+                children.set_node_info(child_i, l_info);
                 children.update_unbalance_flag(child_i);
 
                 Node::Internal(Arc::new(right))
@@ -205,7 +205,7 @@ impl Children {
     pub(crate) fn refresh_child(&mut self, idx: usize) {
         if self.nodes()[idx].is_internal() {
             let info = self.nodes()[idx].text_info();
-            self.info_mut()[idx] = info;
+            self.set_node_info(idx, info);
         }
         self.update_unbalance_flag(idx);
     }

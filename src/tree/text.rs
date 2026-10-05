@@ -1,4 +1,4 @@
-use super::{text_info::TextInfo, MAX_TEXT_SIZE};
+use super::{text_info::NodeInfo, MAX_TEXT_SIZE};
 
 #[cfg(feature = "metric_chars")]
 use str_indices::chars;
@@ -51,8 +51,8 @@ impl Text {
     }
 
     #[inline(always)]
-    pub fn text_info(&self) -> TextInfo {
-        TextInfo::from_str(self.0.text())
+    pub fn text_info(&self) -> NodeInfo {
+        NodeInfo::from_str(self.0.text())
     }
 
     /// Returns the contained text as a string slice.
@@ -118,7 +118,7 @@ impl Text {
     // Modify.
 
     /// Inserts the given text at the given byte index, and returns the
-    /// updated TextInfo.  Text with no line break updates `current_info` in
+    /// updated NodeInfo.  Text with no line break updates `current_info` in
     /// place; other text makes a rescan of the new text.
     ///
     /// Panics if there isn't enough free space or if the byte index
@@ -128,8 +128,8 @@ impl Text {
         &mut self,
         byte_idx: usize,
         text: &str,
-        current_info: TextInfo,
-    ) -> TextInfo {
+        current_info: NodeInfo,
+    ) -> NodeInfo {
         if text.is_empty() {
             return current_info;
         }
@@ -157,7 +157,7 @@ impl Text {
     }
 
     /// Removes the text in the given right-exclusive byte range, and returns
-    /// the updated TextInfo, rescanned from the remaining text.
+    /// the updated NodeInfo, rescanned from the remaining text.
     ///
     /// Panics if the range isn't valid or doesn't lie on valid char
     /// boundaries.
@@ -165,8 +165,8 @@ impl Text {
     pub fn remove_range_and_update_info(
         &mut self,
         byte_idx_range: [usize; 2],
-        current_info: TextInfo,
-    ) -> TextInfo {
+        current_info: NodeInfo,
+    ) -> NodeInfo {
         if byte_idx_range[0] == byte_idx_range[1] {
             return current_info;
         }
@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn from_str_02() {
         let text = "Hello world!";
-        let text_info = TextInfo::from_str(text);
+        let text_info = NodeInfo::from_str(text);
         let leaf = Text::from_str(text);
         assert_eq!(leaf.text(), text);
         assert_eq!(leaf.text_info(), text_info);
@@ -714,19 +714,19 @@ mod tests {
 
         let info = leaf.insert_str_and_update_info(0, "o ", leaf.text_info());
         assert_eq!(leaf, "o ");
-        assert_eq!(info, TextInfo::from_str("o "));
+        assert_eq!(info, NodeInfo::from_str("o "));
 
         let info = leaf.insert_str_and_update_info(0, "He", leaf.text_info());
         assert_eq!(leaf, "Heo ");
-        assert_eq!(info, TextInfo::from_str("Heo "));
+        assert_eq!(info, NodeInfo::from_str("Heo "));
 
         let info = leaf.insert_str_and_update_info(2, "ll", leaf.text_info());
         assert_eq!(leaf, "Hello ");
-        assert_eq!(info, TextInfo::from_str("Hello "));
+        assert_eq!(info, NodeInfo::from_str("Hello "));
 
         let info = leaf.insert_str_and_update_info(6, "world!", leaf.text_info());
         assert_eq!(leaf, "Hello world!");
-        assert_eq!(info, TextInfo::from_str("Hello world!"));
+        assert_eq!(info, NodeInfo::from_str("Hello world!"));
     }
 
     #[test]
@@ -735,19 +735,19 @@ mod tests {
 
         let info = leaf.remove_range_and_update_info([4, 6], leaf.text_info());
         assert_eq!(leaf, "Hellworld!");
-        assert_eq!(info, TextInfo::from_str("Hellworld!"));
+        assert_eq!(info, NodeInfo::from_str("Hellworld!"));
 
         let info = leaf.remove_range_and_update_info([0, 3], leaf.text_info());
         assert_eq!(leaf, "lworld!");
-        assert_eq!(info, TextInfo::from_str("lworld!"));
+        assert_eq!(info, NodeInfo::from_str("lworld!"));
 
         let info = leaf.remove_range_and_update_info([4, 7], leaf.text_info());
         assert_eq!(leaf, "lwor");
-        assert_eq!(info, TextInfo::from_str("lwor"));
+        assert_eq!(info, NodeInfo::from_str("lwor"));
 
         let info = leaf.remove_range_and_update_info([0, 4], leaf.text_info());
         assert_eq!(leaf, "");
-        assert_eq!(info, TextInfo::from_str(""));
+        assert_eq!(info, NodeInfo::from_str(""));
     }
 
     #[test]
