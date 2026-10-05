@@ -166,8 +166,9 @@ impl Node {
                 children.update_unbalance_flag(child_i);
 
                 // Handle the residual node if there is one and return.  The
-                // node's info is folded from its children: the line summary
-                // holds maxima, which cannot be updated by subtraction.
+                // node's line summary holds maxima, which cannot be updated
+                // by subtraction, so it is folded from the children unless
+                // the child's rows stayed the same.
                 if let Some((r_info, r_node)) = residual {
                     if children.len() < MAX_CHILDREN {
                         children.insert(child_i + 1, (r_info, r_node));
@@ -180,6 +181,8 @@ impl Node {
                             Some((r_info, Node::Internal(Arc::new(r)))),
                         ))
                     }
+                } else if l_info.same_rows(&info) {
+                    Ok((node_info.replace_counts(info, l_info), None))
                 } else {
                     Ok((children.combined_text_info(), None))
                 }
@@ -252,7 +255,12 @@ impl Node {
                             .remove_byte_range([start_byte_idx, end_byte_idx], start_info)?;
                         children.info_mut()[start_child_i] = new_child_info;
                         children.update_unbalance_flag(start_child_i);
-                        Ok((children.combined_text_info(), created_boundary))
+                        let new_info = if new_child_info.same_rows(&start_info) {
+                            node_info.replace_counts(start_info, new_child_info)
+                        } else {
+                            children.combined_text_info()
+                        };
+                        Ok((new_info, created_boundary))
                     }
                 }
                 // More complex case: the removal spans multiple children.

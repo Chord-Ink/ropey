@@ -31,6 +31,48 @@ pub(crate) fn byte_is_cr(text: &str, byte_idx: usize) -> bool {
         .unwrap_or(false)
 }
 
+/// Byte index of the first LF in `bytes`.
+#[inline(always)]
+#[allow(unused)]
+pub(crate) fn find_lf(bytes: &[u8]) -> Option<usize> {
+    #[cfg(feature = "memchr")]
+    {
+        memchr::memchr(b'\n', bytes)
+    }
+    #[cfg(not(feature = "memchr"))]
+    {
+        bytes.iter().position(|&b| b == 0x0A)
+    }
+}
+
+/// Byte index of the last LF in `bytes`.
+#[inline(always)]
+#[allow(unused)]
+pub(crate) fn rfind_lf(bytes: &[u8]) -> Option<usize> {
+    #[cfg(feature = "memchr")]
+    {
+        memchr::memrchr(b'\n', bytes)
+    }
+    #[cfg(not(feature = "memchr"))]
+    {
+        bytes.iter().rposition(|&b| b == 0x0A)
+    }
+}
+
+/// Whether `bytes` holds an LF or a CR.
+#[inline(always)]
+#[allow(unused)]
+pub(crate) fn has_lf_or_cr(bytes: &[u8]) -> bool {
+    #[cfg(feature = "memchr")]
+    {
+        memchr::memchr2(b'\n', b'\r', bytes).is_some()
+    }
+    #[cfg(not(feature = "memchr"))]
+    {
+        bytes.iter().any(|&b| b == 0x0A || b == 0x0D)
+    }
+}
+
 #[cfg(any(
     feature = "metric_lines_lf",
     feature = "metric_lines_lf_cr",

@@ -25,6 +25,8 @@ use crate::LineType;
 #[cfg(feature = "text_summary")]
 pub(crate) use super::line_summary::LineSummary;
 
+use crate::str_utils;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub(crate) struct TextInfo {
     pub bytes: usize,
@@ -132,6 +134,65 @@ impl TextInfo {
             LineType::Unicode => self.line_breaks_unicode,
         }
     }
+
+    /// The info of `text` after `ins` is put at `byte_idx`, worked out
+    /// from `self`, the info of `text`, without a rescan.
+    ///
+    /// Returns `None` when `ins` holds an LF, or a CR while a line metric
+    /// counts CR.  The caller then rescans the text.
+    #[must_use]
+    pub(crate) fn str_insert(self, text: &str, byte_idx: usize, ins: &str) -> Option<TextInfo> {
+        #[cfg(any(feature = "metric_lines_lf_cr", feature = "metric_lines_unicode"))]
+        let rescan = str_utils::has_lf_or_cr(ins.as_bytes());
+        #[cfg(not(any(feature = "metric_lines_lf_cr", feature = "metric_lines_unicode")))]
+        let rescan = str_utils::find_lf(ins.as_bytes()).is_some();
+        if rescan {
+            return None;
+        }
+
+        // Silence unused parameter warnings with some features.
+        let _ = (text, byte_idx);
+
+        #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
+        let ins_chars = chars::count(ins);
+
+        #[cfg(feature = "metric_utf16")]
+        let ins_utf16 = ins_chars + utf16::count_surrogates(ins);
+
+        // Putting a char between a CR and an LF splits one break into two.
+        #[cfg(any(feature = "metric_lines_lf_cr", feature = "metric_lines_unicode"))]
+        let split_crlf = (byte_idx > 0
+            && str_utils::byte_is_cr(text, byte_idx - 1)
+            && str_utils::byte_is_lf(text, byte_idx)) as usize;
+
+        Some(TextInfo {
+            bytes: self.bytes + ins.len(),
+
+            #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
+            chars: self.chars + ins_chars,
+
+            #[cfg(feature = "metric_utf16")]
+            utf16: self.utf16 + ins_utf16,
+
+            #[cfg(feature = "metric_lines_lf")]
+            line_breaks_lf: self.line_breaks_lf,
+
+            #[cfg(feature = "metric_lines_lf_cr")]
+            line_breaks_cr_lf: self.line_breaks_cr_lf + split_crlf,
+
+            #[cfg(feature = "metric_lines_unicode")]
+            line_breaks_unicode: self.line_breaks_unicode + split_crlf + lines::count_breaks(ins),
+
+            #[cfg(feature = "text_summary")]
+            line_summary: self.line_summary.insert_in_row(
+                text,
+                byte_idx,
+                self.line_breaks_lf,
+                self.chars == self.bytes,
+                [ins.len(), ins_chars, ins_utf16],
+            ),
+        })
+    }
 }
 
 impl TextInfo {
@@ -162,6 +223,51 @@ impl TextInfo {
 
             #[cfg(feature = "metric_lines_unicode")]
             line_breaks_unicode: self.line_breaks_unicode + rhs.line_breaks_unicode,
+        }
+    }
+
+    /// Whether `self` and `other` have the same LF count and line summary.
+    /// A parent's line summary depends on its children only through these.
+    #[inline(always)]
+    pub(crate) fn same_rows(&self, other: &TextInfo) -> bool {
+        // Silence unused parameter warning when `text_summary` is off.
+        let _ = other;
+
+        #[cfg(feature = "text_summary")]
+        return self.line_breaks_lf == other.line_breaks_lf
+            && self.line_summary == other.line_summary;
+
+        #[cfg(not(feature = "text_summary"))]
+        return true;
+    }
+
+    /// The info of a node after one child's info changed from `old` to
+    /// `new`, where `self` is the node's old info.  Only the counts change:
+    /// the line summary is kept, so `old` and `new` must have the same rows.
+    #[inline(always)]
+    pub(crate) fn replace_counts(self, old: TextInfo, new: TextInfo) -> TextInfo {
+        TextInfo {
+            #[cfg(feature = "text_summary")]
+            line_summary: self.line_summary,
+
+            bytes: self.bytes - old.bytes + new.bytes,
+
+            #[cfg(any(feature = "metric_chars", feature = "metric_utf16"))]
+            chars: self.chars - old.chars + new.chars,
+
+            #[cfg(feature = "metric_utf16")]
+            utf16: self.utf16 - old.utf16 + new.utf16,
+
+            #[cfg(feature = "metric_lines_lf")]
+            line_breaks_lf: self.line_breaks_lf - old.line_breaks_lf + new.line_breaks_lf,
+
+            #[cfg(feature = "metric_lines_lf_cr")]
+            line_breaks_cr_lf: self.line_breaks_cr_lf - old.line_breaks_cr_lf
+                + new.line_breaks_cr_lf,
+
+            #[cfg(feature = "metric_lines_unicode")]
+            line_breaks_unicode: self.line_breaks_unicode - old.line_breaks_unicode
+                + new.line_breaks_unicode,
         }
     }
 }
@@ -220,6 +326,50 @@ mod tests {
     #[test]
     fn new_01() {
         assert_eq!(TextInfo::new(), TextInfo::from_str(""));
+    }
+
+    #[test]
+    fn str_insert_matches_rescan() {
+        let texts = [
+            "",
+            "a",
+            "ab\ncd",
+            "\r\n",
+            "a\r\nb\r\n\r",
+            "こんにちは\n🐸\r",
+            "\u{85}x\u{2028}\u{0B}",
+            "ab\nabc\nab",
+        ];
+        let inserts = [
+            "x",
+            "é",
+            "🐸",
+            "\t\u{85}",
+            "\u{2029}\u{0C}",
+            "\r",
+            "\n",
+            "a\r\nb",
+        ];
+        let cr_counts = cfg!(any(
+            feature = "metric_lines_lf_cr",
+            feature = "metric_lines_unicode"
+        ));
+        for text in texts {
+            let info = TextInfo::from_str(text);
+            for i in (0..=text.len()).filter(|&i| text.is_char_boundary(i)) {
+                for ins in inserts {
+                    let joined = format!("{}{ins}{}", &text[..i], &text[i..]);
+                    let rescan = ins.contains('\n') || (cr_counts && ins.contains('\r'));
+                    match info.str_insert(text, i, ins) {
+                        Some(new_info) => {
+                            assert!(!rescan, "{text:?} at {i} + {ins:?}");
+                            assert_eq!(new_info, TextInfo::from_str(&joined), "{joined:?}");
+                        }
+                        None => assert!(rescan, "{text:?} at {i} + {ins:?}"),
+                    }
+                }
+            }
+        }
     }
 
     #[test]

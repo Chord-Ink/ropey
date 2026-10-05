@@ -118,7 +118,8 @@ impl Text {
     // Modify.
 
     /// Inserts the given text at the given byte index, and returns the
-    /// updated TextInfo, rescanned from the new text.
+    /// updated TextInfo.  Text with no line break updates `current_info` in
+    /// place; other text makes a rescan of the new text.
     ///
     /// Panics if there isn't enough free space or if the byte index
     /// isn't on a valid char boundary.
@@ -133,9 +134,11 @@ impl Text {
             return current_info;
         }
 
+        let new_info = current_info.str_insert(self.text(), byte_idx, text);
+
         self.0.insert(byte_idx, text);
 
-        self.text_info()
+        new_info.unwrap_or_else(|| self.text_info())
     }
 
     /// Inserts `text` and splits the resulting text into two roughly equal

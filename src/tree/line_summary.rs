@@ -9,7 +9,9 @@
 //! Only LF starts a row.  CR is an ordinary char here, as in Zed's
 //! `TextSummary`.
 
-use str_indices::utf16;
+use str_indices::{chars, lines_lf, utf16};
+
+use crate::str_utils;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
 pub(crate) struct LineSummary {
@@ -123,6 +125,72 @@ impl LineSummary {
             longest_row_chars: longest_row_chars as u32,
         };
         (summary, rows)
+    }
+
+    /// The summary of `text` after inserted text with no LF is put at
+    /// `byte_idx`.  `self` is the summary of `text`, which has `rows` LFs.
+    /// `added` is the byte, char and UTF-16 count of the inserted text.
+    ///
+    /// Only the row around the insert grows, so only that row is looked at.
+    /// It becomes the longest row when it is now longer, or as long and
+    /// earlier, which keeps the first longest row as `concat()` does.
+    pub(crate) fn insert_in_row(
+        self,
+        text: &str,
+        byte_idx: usize,
+        rows: usize,
+        all_ascii: bool,
+        added: [usize; 3],
+    ) -> LineSummary {
+        let [added_bytes, added_chars, added_utf16] = added;
+        let bytes = text.as_bytes();
+        let row_start = str_utils::rfind_lf(&bytes[..byte_idx]).map(|i| i + 1);
+        let row_end = str_utils::find_lf(&bytes[byte_idx..]).map(|i| byte_idx + i);
+
+        let mut s = self;
+        if row_start.is_none() {
+            s.first_line_chars += added_chars as u32;
+        }
+        if row_end.is_none() {
+            s.last_line_bytes += added_bytes as u32;
+            s.last_line_chars += added_chars as u32;
+            s.last_line_utf16 += added_utf16 as u32;
+        }
+
+        let (row, row_chars) = match (row_start, row_end) {
+            (None, _) => (0, s.first_line_chars),
+            (Some(_), None) => (rows, s.last_line_chars),
+            (Some(start), Some(end)) => {
+                // A row has no more chars than bytes.
+                let longest = s.longest_row_chars as usize;
+                if end - start + added_chars < longest {
+                    return s;
+                }
+                let old_chars = if all_ascii {
+                    end - start
+                } else {
+                    chars::count(&text[start..end])
+                };
+                if old_chars + added_chars < longest {
+                    return s;
+                }
+                let row = if start <= text.len() / 2 {
+                    lines_lf::count_breaks(&text[..start])
+                } else {
+                    rows - lines_lf::count_breaks(&text[end..])
+                };
+                (row, (old_chars + added_chars) as u32)
+            }
+        };
+
+        let row = row as u32;
+        if row_chars > s.longest_row_chars
+            || (row_chars == s.longest_row_chars && row < s.longest_row)
+        {
+            s.longest_row = row;
+            s.longest_row_chars = row_chars;
+        }
+        s
     }
 
     /// Combines the summaries of two texts as if they were joined.
@@ -250,6 +318,37 @@ mod tests {
                 let (sb, rb) = scan(b);
                 let joined = format!("{a}{b}");
                 assert_eq!((sa.concat(ra, sb, rb), ra + rb), naive(&joined), "{a:?} + {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn insert_in_row_matches_naive_scan() {
+        // Rows that tie the longest row after an insert, before and after it,
+        // in the first, a middle and the last row, with and without
+        // multibyte chars.
+        let ties = [
+            "abc\nab\nabc",
+            "ab\nabc\nab",
+            "ab\nab\nabc",
+            "abc\nab",
+            "ab\nabc",
+            "abcd\néé\nabcd",
+            "ab\néé\nabc",
+            "x\n\n\nx\n",
+            "🐸🐸\nab\n🐸🐸\nabc",
+        ];
+        let inserts = ["x", "é", "🐸", "ab", "\r", "\t\u{85}\u{2028}"];
+        for text in TEXTS.iter().copied().chain(ties) {
+            let (summary, rows) = scan(text);
+            for i in (0..=text.len()).filter(|&i| text.is_char_boundary(i)) {
+                for ins in inserts {
+                    let joined = format!("{}{ins}{}", &text[..i], &text[i..]);
+                    let c = chars::count(ins);
+                    let added = [ins.len(), c, c + utf16::count_surrogates(ins)];
+                    let updated = summary.insert_in_row(text, i, rows, text.is_ascii(), added);
+                    assert_eq!(updated, naive(&joined).0, "{text:?} at {i} + {ins:?}");
+                }
             }
         }
     }

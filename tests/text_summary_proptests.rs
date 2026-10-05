@@ -58,6 +58,7 @@ fn text_strategy() -> impl Strategy<Value = String> {
 #[derive(Debug, Clone)]
 enum Op {
     Insert(f64, String),
+    Type(f64, String),
     Remove(f64, f64),
     Append(String),
     Prepend(String),
@@ -72,6 +73,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     let f = 0.0..=1.0f64;
     prop_oneof![
         (f.clone(), text_strategy()).prop_map(|(a, t)| Op::Insert(a, t)),
+        (f.clone(), "[a-zé🐸 \\t\\r]{1,40}").prop_map(|(a, t)| Op::Type(a, t)),
         (f.clone(), f.clone()).prop_map(|(a, b)| Op::Remove(a, b)),
         text_strategy().prop_map(Op::Append),
         text_strategy().prop_map(Op::Prepend),
@@ -90,6 +92,15 @@ fn apply(rope: &mut Rope, text: &mut String, op: &Op) {
             let i = floor(text, *a);
             rope.insert(i, t);
             text.insert_str(i, t);
+        }
+        Op::Type(a, t) => {
+            // One char at a time, the way typing reaches the rope.
+            let mut i = floor(text, *a);
+            for c in t.chars() {
+                rope.insert_char(i, c);
+                text.insert(i, c);
+                i += c.len_utf8();
+            }
         }
         Op::Remove(a, b) => {
             let (i, j) = (floor(text, a.min(*b)), floor(text, a.max(*b)));
