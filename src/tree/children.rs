@@ -317,12 +317,18 @@ impl Children {
 
     #[inline(always)]
     pub fn combined_text_info(&self) -> NodeInfo {
-        let counts = self.info().iter().fold(TextInfo::new(), |acc, &c| acc + c);
-        NodeInfo {
-            #[cfg(feature = "text_summary")]
-            line_summary: LineSummary::join(self.info(), self.lines(), counts.bytes),
+        #[cfg(feature = "text_summary")]
+        {
+            let (counts, line_summary) = LineSummary::join(self.info(), self.lines());
+            NodeInfo {
+                counts,
+                line_summary,
+            }
+        }
 
-            counts,
+        #[cfg(not(feature = "text_summary"))]
+        NodeInfo {
+            counts: self.info().iter().fold(TextInfo::new(), |acc, &c| acc + c),
         }
     }
 

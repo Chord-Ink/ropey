@@ -220,25 +220,36 @@ impl LineSummary {
         self.concat_u32(rows, rhs, rhs_rows)
     }
 
-    /// The summary of texts joined in order.  `counts` holds their LF
-    /// counts, and `bytes` is the byte count of the joined text.  Like
-    /// `concat()`, it checks for overflow once, from `bytes`.
+    /// The counts and summary of texts joined in order, from their counts
+    /// and summaries, in one pass.  Like `concat()`, it uses u32 math while
+    /// the joined text fits in u32::MAX bytes.  Past that it starts again on
+    /// the checked path.
     #[inline(always)]
-    pub(crate) fn join(counts: &[TextInfo], lines: &[LineSummary], bytes: usize) -> LineSummary {
+    pub(crate) fn join(counts: &[TextInfo], lines: &[LineSummary]) -> (TextInfo, LineSummary) {
+        let mut total = TextInfo::new();
         let mut acc = LineSummary::new();
-        let mut rows = 0;
-        if bytes > u32::MAX as usize {
-            for (c, &l) in counts.iter().zip(lines) {
-                acc = acc.concat_checked(rows, l, c.line_breaks_lf);
-                rows += c.line_breaks_lf;
+        for (&c, &l) in counts.iter().zip(lines) {
+            let rows = total.line_breaks_lf;
+            total += c;
+            if total.bytes > u32::MAX as usize {
+                return Self::join_checked(counts, lines);
             }
-        } else {
-            for (c, &l) in counts.iter().zip(lines) {
-                acc = acc.concat_u32(rows, l, c.line_breaks_lf);
-                rows += c.line_breaks_lf;
-            }
+            acc = acc.concat_u32(rows, l, c.line_breaks_lf);
         }
-        acc
+        (total, acc)
+    }
+
+    /// `join()` for joined texts over u32::MAX bytes.
+    #[cold]
+    #[inline(never)]
+    fn join_checked(counts: &[TextInfo], lines: &[LineSummary]) -> (TextInfo, LineSummary) {
+        let mut total = TextInfo::new();
+        let mut acc = LineSummary::new();
+        for (&c, &l) in counts.iter().zip(lines) {
+            acc = acc.concat_checked(total.line_breaks_lf, l, c.line_breaks_lf);
+            total += c;
+        }
+        (total, acc)
     }
 
     /// `concat()` with plain u32 math, for joined texts of at most
@@ -499,6 +510,41 @@ mod tests {
     fn concat_panics_when_a_row_index_is_past_u32() {
         let (row, rows) = scan("\nab");
         one_row(1).concat(MAX, row, rows, MAX + 4);
+    }
+
+    fn counts(bytes: usize, rows: usize) -> TextInfo {
+        let mut c = TextInfo::new();
+        c.bytes = bytes;
+        c.line_breaks_lf = rows;
+        c
+    }
+
+    #[test]
+    fn join_of_texts_over_u32_bytes_keeps_short_rows() {
+        let (row, rows) = scan("\nab");
+        let (total, joined) = LineSummary::join(
+            &[counts(MAX, 0), counts(3, rows)],
+            &[one_row(u32::MAX), row],
+        );
+        assert_eq!(total, counts(MAX + 3, 1));
+        assert_eq!(
+            joined,
+            LineSummary {
+                last_line_bytes: 2,
+                last_line_chars: 2,
+                last_line_utf16: 2,
+                ..one_row(u32::MAX)
+            }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit in u32")]
+    fn join_panics_when_a_row_is_longer_than_u32() {
+        LineSummary::join(
+            &[counts(MAX, 0), counts(1, 0)],
+            &[one_row(u32::MAX), one_row(1)],
+        );
     }
 
     #[test]
