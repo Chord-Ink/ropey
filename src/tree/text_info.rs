@@ -368,6 +368,7 @@ impl Add for NodeInfo {
                 self.counts.line_breaks_lf,
                 rhs.line_summary,
                 rhs.counts.line_breaks_lf,
+                self.counts.bytes + rhs.counts.bytes,
             ),
 
             counts: self.counts + rhs.counts,

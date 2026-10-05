@@ -119,13 +119,15 @@ impl LineSummary {
             last_line_chars + utf16::count_surrogates(&text[row_start..])
         };
 
+        // No value is larger than the byte count, so one check covers all.
+        to_u32(bytes.len());
         let summary = LineSummary {
-            last_line_bytes: to_u32(last_line_bytes),
-            first_line_chars: to_u32(first_line_chars),
-            last_line_chars: to_u32(last_line_chars),
-            last_line_utf16: to_u32(last_line_utf16),
-            longest_row: to_u32(longest_row),
-            longest_row_chars: to_u32(longest_row_chars),
+            last_line_bytes: last_line_bytes as u32,
+            first_line_chars: first_line_chars as u32,
+            last_line_chars: last_line_chars as u32,
+            last_line_utf16: last_line_utf16 as u32,
+            longest_row: longest_row as u32,
+            longest_row_chars: longest_row_chars as u32,
         };
         (summary, rows)
     }
@@ -197,34 +199,49 @@ impl LineSummary {
     }
 
     /// Combines the summaries of two texts as if they were joined.
-    /// `rows` and `rhs_rows` are the LF counts of the two texts.
+    /// `rows` and `rhs_rows` are the LF counts of the two texts, and
+    /// `bytes` is the byte count of the joined text.
+    ///
+    /// No value in a summary is larger than its text's byte count, so u32
+    /// math cannot overflow while `bytes` fits in u32.  Larger texts take
+    /// the checked path.
     #[inline(always)]
-    pub(crate) fn concat(self, rows: usize, rhs: LineSummary, rhs_rows: usize) -> LineSummary {
+    pub(crate) fn concat(
+        self,
+        rows: usize,
+        rhs: LineSummary,
+        rhs_rows: usize,
+        bytes: usize,
+    ) -> LineSummary {
+        if bytes > u32::MAX as usize {
+            return self.concat_checked(rows, rhs, rhs_rows);
+        }
+
         let mut longest_row = self.longest_row;
         let mut longest_row_chars = self.longest_row_chars;
 
-        let joined_chars = add(self.last_line_chars, rhs.first_line_chars as usize);
+        let joined_chars = self.last_line_chars + rhs.first_line_chars;
         if joined_chars > longest_row_chars {
-            longest_row = to_u32(rows);
+            longest_row = rows as u32;
             longest_row_chars = joined_chars;
         }
         if rhs.longest_row_chars > longest_row_chars {
-            longest_row = add(rhs.longest_row, rows);
+            longest_row = rows as u32 + rhs.longest_row;
             longest_row_chars = rhs.longest_row_chars;
         }
 
         let first_line_chars = if rows == 0 {
-            add(self.first_line_chars, rhs.first_line_chars as usize)
+            self.first_line_chars + rhs.first_line_chars
         } else {
             self.first_line_chars
         };
 
         if rhs_rows == 0 {
             LineSummary {
-                last_line_bytes: add(self.last_line_bytes, rhs.last_line_bytes as usize),
+                last_line_bytes: self.last_line_bytes + rhs.last_line_bytes,
                 first_line_chars,
-                last_line_chars: add(self.last_line_chars, rhs.last_line_chars as usize),
-                last_line_utf16: add(self.last_line_utf16, rhs.last_line_utf16 as usize),
+                last_line_chars: self.last_line_chars + rhs.last_line_chars,
+                last_line_utf16: self.last_line_utf16 + rhs.last_line_utf16,
                 longest_row,
                 longest_row_chars,
             }
@@ -237,6 +254,65 @@ impl LineSummary {
                 longest_row,
                 longest_row_chars,
             }
+        }
+    }
+
+    /// `concat()` for joined texts over u32::MAX bytes.  The math runs in
+    /// u64 and panics when a result does not fit in u32.
+    #[cold]
+    #[inline(never)]
+    fn concat_checked(self, rows: usize, rhs: LineSummary, rhs_rows: usize) -> LineSummary {
+        let rows = rows as u64;
+        let mut longest_row = self.longest_row as u64;
+        let mut longest_row_chars = self.longest_row_chars as u64;
+
+        let joined_chars = self.last_line_chars as u64 + rhs.first_line_chars as u64;
+        if joined_chars > longest_row_chars {
+            longest_row = rows;
+            longest_row_chars = joined_chars;
+        }
+        if rhs.longest_row_chars as u64 > longest_row_chars {
+            longest_row = rows + rhs.longest_row as u64;
+            longest_row_chars = rhs.longest_row_chars as u64;
+        }
+
+        let first_line_chars = if rows == 0 {
+            self.first_line_chars as u64 + rhs.first_line_chars as u64
+        } else {
+            self.first_line_chars as u64
+        };
+
+        let [last_line_bytes, last_line_chars, last_line_utf16] = if rhs_rows == 0 {
+            [
+                self.last_line_bytes as u64 + rhs.last_line_bytes as u64,
+                self.last_line_chars as u64 + rhs.last_line_chars as u64,
+                self.last_line_utf16 as u64 + rhs.last_line_utf16 as u64,
+            ]
+        } else {
+            [
+                rhs.last_line_bytes as u64,
+                rhs.last_line_chars as u64,
+                rhs.last_line_utf16 as u64,
+            ]
+        };
+
+        let all = longest_row
+            | longest_row_chars
+            | first_line_chars
+            | last_line_bytes
+            | last_line_chars
+            | last_line_utf16;
+        if all > u32::MAX as u64 {
+            too_large();
+        }
+
+        LineSummary {
+            last_line_bytes: last_line_bytes as u32,
+            first_line_chars: first_line_chars as u32,
+            last_line_chars: last_line_chars as u32,
+            last_line_utf16: last_line_utf16 as u32,
+            longest_row: longest_row as u32,
+            longest_row_chars: longest_row_chars as u32,
         }
     }
 }
@@ -344,7 +420,8 @@ mod tests {
                 let (sa, ra) = scan(a);
                 let (sb, rb) = scan(b);
                 let joined = format!("{a}{b}");
-                assert_eq!((sa.concat(ra, sb, rb), ra + rb), naive(&joined), "{a:?} + {b:?}");
+                let sum = sa.concat(ra, sb, rb, joined.len());
+                assert_eq!((sum, ra + rb), naive(&joined), "{a:?} + {b:?}");
             }
         }
     }
@@ -360,23 +437,40 @@ mod tests {
         }
     }
 
+    const MAX: usize = u32::MAX as usize;
+
     #[test]
     fn concat_fills_u32_rows_exactly() {
-        let joined = one_row(u32::MAX - 1).concat(0, one_row(1), 0);
+        let joined = one_row(u32::MAX - 1).concat(0, one_row(1), 0, MAX);
         assert_eq!(joined, one_row(u32::MAX));
+    }
+
+    #[test]
+    fn concat_of_texts_over_u32_bytes_keeps_short_rows() {
+        let (row, rows) = scan("\nab");
+        let joined = one_row(u32::MAX).concat(0, row, rows, MAX + 3);
+        assert_eq!(
+            joined,
+            LineSummary {
+                last_line_bytes: 2,
+                last_line_chars: 2,
+                last_line_utf16: 2,
+                ..one_row(u32::MAX)
+            }
+        );
     }
 
     #[test]
     #[should_panic(expected = "does not fit in u32")]
     fn concat_panics_when_a_row_is_longer_than_u32() {
-        one_row(u32::MAX).concat(0, one_row(1), 0);
+        one_row(u32::MAX).concat(0, one_row(1), 0, MAX + 1);
     }
 
     #[test]
     #[should_panic(expected = "does not fit in u32")]
     fn concat_panics_when_a_row_index_is_past_u32() {
         let (row, rows) = scan("\nab");
-        one_row(1).concat(u32::MAX as usize, row, rows);
+        one_row(1).concat(MAX, row, rows, MAX + 4);
     }
 
     #[test]
