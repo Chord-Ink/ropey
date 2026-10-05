@@ -53,6 +53,13 @@ pub(crate) mod lines {
 
     #[inline(always)]
     pub(crate) fn to_byte_idx(text: &str, byte_idx: usize, line_type: LineType) -> usize {
+        #[cfg(feature = "memchr")]
+        if byte_idx == 1 {
+            if let Some(idx) = memchr_next_line_start(text, line_type) {
+                return idx;
+            }
+        }
+
         match line_type {
             #[cfg(feature = "metric_lines_lf")]
             LineType::LF => str_indices::lines_lf::to_byte_idx(text, byte_idx),
@@ -84,6 +91,16 @@ pub(crate) mod lines {
         // Silence unused parameter warning with certain feature
         // configurations.
         let _ = line_type;
+
+        #[cfg(all(feature = "memchr", feature = "metric_lines_lf"))]
+        if line_type == LineType::LF {
+            return memchr::memrchr(b'\n', text.as_bytes()).map_or(0, |i| i + 1);
+        }
+
+        #[cfg(all(feature = "memchr", feature = "metric_lines_lf_cr"))]
+        if line_type == LineType::LF_CR {
+            return memchr::memrchr2(b'\n', b'\r', text.as_bytes()).map_or(0, |i| i + 1);
+        }
 
         let mut itr = text.bytes().enumerate().rev();
 
@@ -132,6 +149,28 @@ pub(crate) mod lines {
         }
 
         return 0;
+    }
+
+    /// The start of the second line, found with `memchr`, for the line
+    /// types where that is possible.  `None` means "not handled here".
+    #[cfg(feature = "memchr")]
+    #[inline(always)]
+    fn memchr_next_line_start(text: &str, line_type: LineType) -> Option<usize> {
+        let bytes = text.as_bytes();
+        match line_type {
+            #[cfg(feature = "metric_lines_lf")]
+            LineType::LF => Some(memchr::memchr(b'\n', bytes).map_or(bytes.len(), |i| i + 1)),
+
+            #[cfg(feature = "metric_lines_lf_cr")]
+            LineType::LF_CR => Some(match memchr::memchr2(b'\n', b'\r', bytes) {
+                None => bytes.len(),
+                Some(i) if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') => i + 2,
+                Some(i) => i + 1,
+            }),
+
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
     }
 
     /// If there is a trailing line break, returns its byte index.
