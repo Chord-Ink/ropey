@@ -297,6 +297,20 @@ mod inner {
         len: u16,
     }
 
+    /// Whether `bytes` starts on a char boundary and ends with a whole char.
+    /// Reading a chunk checks this in debug builds; tests check every byte.
+    fn ends_are_whole_chars(bytes: &[u8]) -> bool {
+        let boundary = |byte: u8| (byte as i8) >= -0x40;
+        if bytes.first().is_some_and(|&byte| !boundary(byte)) {
+            return false;
+        }
+        let tail = bytes.len().saturating_sub(4)..bytes.len();
+        match tail.rev().find(|&idx| boundary(bytes[idx])) {
+            Some(last) => std::str::from_utf8(&bytes[last..]).is_ok(),
+            None => bytes.is_empty(),
+        }
+    }
+
     impl Buffer {
         #[inline(always)]
         pub fn new() -> Self {
@@ -361,8 +375,15 @@ mod inner {
 
             // SAFETY: we know that the chunks must be valid utf8, because the
             // API doesn't allow the creation of not-utf8 data or incorrectly
-            // split utf8 data.
+            // split utf8 data: `from_str` and `insert` take a `&str`, and
+            // `insert` and `remove` assert (in every build) that they cut at
+            // char boundaries. Debug builds check on every read that the
+            // chunk starts and ends on a whole char; checking every byte on
+            // every read is too slow for callers, so only ropey's own tests
+            // do that.
+            #[cfg(test)]
             debug_assert!(std::str::from_utf8(bytes).is_ok());
+            debug_assert!(ends_are_whole_chars(bytes));
             unsafe { std::str::from_utf8_unchecked(bytes) }
         }
 
